@@ -13,6 +13,7 @@
 from launch import LaunchDescription
 from launch.actions import ExecuteProcess, LogInfo, RegisterEventHandler
 from launch.event_handlers import OnProcessIO
+from launch_ros.actions import Node
 
 
 # =============================================================================
@@ -85,6 +86,13 @@ def generate_launch_description():
         # 'params_file:=/absolute/path/to/explore_params.yaml',
     ]
 
+    fsm_node = Node(
+        package='auto_nav',
+        executable='mission_controller',
+        name='ultimate_mission_controller',
+        output='screen',
+    )
+
     # -------------------------------------------------------------------------
     # Event chain
     # -------------------------------------------------------------------------
@@ -103,8 +111,6 @@ def generate_launch_description():
     )
 
     # Step 3: Nav2 ready → launch explore_lite
-    # OnProcessIO without target_action watches all processes, which is
-    # necessary here because nav2_process is created dynamically.
     on_nav2_ready = RegisterEventHandler(
         OnProcessIO(
             on_stdout=_make_trigger(
@@ -116,8 +122,27 @@ def generate_launch_description():
         )
     )
 
+    # Step 4: explore_lite ready → launch FSM
+    def on_explore_ready_cb(event):
+        if 'fsm_node' in launched:
+            return []
+        text = (event.text.decode('utf-8', errors='replace')
+                if isinstance(event.text, bytes) else str(event.text))
+        if EXPLORE_READY in text:
+            launched.add('fsm_node')
+            return [
+                LogInfo(msg='explore_lite ready — launching mission FSM...'),
+                fsm_node,
+            ]
+        return []
+
+    on_explore_ready = RegisterEventHandler(
+        OnProcessIO(on_stdout=on_explore_ready_cb)
+    )
+
     return LaunchDescription([
         cartographer,
         on_cartographer_ready,
         on_nav2_ready,
+        on_explore_ready,
     ])
