@@ -117,6 +117,12 @@ class MarkerListener(Node):
         self.snapshot_ready = False
         self._armed = True
 
+    def drain(self, duration_s: float = 0.5) -> None:
+        """Spin unarmed for duration_s to flush any buffered marker messages."""
+        deadline = time.monotonic() + duration_s
+        while time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+
     def _cb(self, msg: MarkerArray) -> None:
         if not msg.markers:
             return
@@ -511,17 +517,33 @@ def main(args=None) -> None:
             if cmd_vel_approach(marker_node, cmd_vel_pub, log):
                 log.info('Docking SUCCESSFUL — robot is within tolerance.')
 
-                # ── STEP 5: WAIT FOR LAUNCH SIGNAL ──────────────────────────
-                log.info('Waiting for launch signal (ArUco marker re-detection) …')
-                if wait_for_snapshot(marker_node):
+                # ── STEP 5: LAUNCH SEQUENCE (3 balls) ───────────────────────
+                TOTAL_BALLS = 3
+                balls_fired = 0
+                while balls_fired < TOTAL_BALLS:
                     log.info(
-                        f'Launch signal received: cam_x={marker_node.cam_x:.4f} m  '
-                        f'cam_z={marker_node.cam_z:.4f} m')
-                    log.info('Holding for 3 seconds before launch …')
-                    time.sleep(1.0)
-                    log.info('>>> LAUNCH SEQUENCE INITIATED (placeholder) <<<')
-                else:
-                    log.warn('No launch signal received — skipping launch.')
+                        f'Waiting for launch signal '
+                        f'(ball {balls_fired + 1}/{TOTAL_BALLS}) …')
+                    if wait_for_snapshot(marker_node):
+                        log.info(
+                            f'Launch signal received: '
+                            f'cam_x={marker_node.cam_x:.4f} m  '
+                            f'cam_z={marker_node.cam_z:.4f} m')
+                        balls_fired += 1
+                        log.info(
+                            f'>>> FIRING ball {balls_fired}/{TOTAL_BALLS} '
+                            f'(placeholder) <<<')
+                        if balls_fired < TOTAL_BALLS:
+                            log.info('Waiting 5 s before next detection …')
+                            time.sleep(5.0)
+                            marker_node.drain()   # flush messages buffered during sleep
+                    else:
+                        log.warn(
+                            f'No launch signal received for ball '
+                            f'{balls_fired + 1} — aborting launch sequence.')
+                        break
+                if balls_fired == TOTAL_BALLS:
+                    log.info(f'All {TOTAL_BALLS} balls fired successfully.')
                 break
 
             # ── STEP 5: RETRY ───────────────────────────────────────────────
