@@ -28,7 +28,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 import tf2_ros
 from geometry_msgs.msg import PoseStamped, Twist
-from std_msgs.msg import String
+from std_msgs.msg import String, Int32
 from visualization_msgs.msg import MarkerArray
 from nav_msgs.msg import OccupancyGrid
 
@@ -74,7 +74,6 @@ MAX_DOCK_RETRIES       = 3
 
 UNDOCK_DISTANCE        = 0.30   # m - Distance to reverse after Station A
 UNDOCK_SPEED           = 0.06   # m/s
-LAUNCH_SIGNAL_TIMEOUT  = 30.0   # s - Wait time for Station B launch signal
 
 VISIT_RADIUS  = 0.3 # m - Coverage sweep mark radius
 GOAL_SPACING  = 0.5 # m - Coverage sweep grid spacing
@@ -82,11 +81,23 @@ GOAL_SPACING  = 0.5 # m - Coverage sweep grid spacing
 MAX_EXPLORE_RESTARTS   = 2
 EXPLORATION_TIMEOUT    = 600.0  # s - Max time to wait for EXPLORATION_COMPLETE before forcing proceed
 
-# Ball firing sequences — (pre-fire delay in seconds, ) for each ball
-# Station A: ball 1 immediately, ball 2 after 9 s, ball 3 after 1 s
+# Station A — timed firing sequence (delay before each ball)
 STATION_A_FIRE_DELAYS = [0.0, 9.0, 1.0]
-# Station B: adjust delays as required
-STATION_B_FIRE_DELAYS = [0.0, 1.0, 1.0]
+
+# Station B — trigger-based firing (moving receptacle)
+STATION_B_TRIGGER_MARKER_ID = 2     # ID of the marker that signals hole alignment
+STATION_B_BALLS             = 3     # number of balls to fire at Station B
+TRIGGER_COOLDOWN            = 1.0   # s - min gap between trigger detections
+
+# Station B cmd_vel approach tuning
+ALIGN_TOL        = 0.03   # m  - |cam_x| threshold to finish alignment phase
+BLIND_THRESHOLD  = 0.20   # m  - cam_z below which detection becomes unreliable
+K_LINEAR         = 0.3    # m/s per m of distance error
+K_ANGULAR        = 1.5    # rad/s per m of lateral error
+MAX_LINEAR       = 0.08   # m/s
+MAX_ANGULAR      = 0.50   # rad/s
+APPROACH_TIMEOUT = 25.0   # s
+LOST_MARKER_S    = 3.0    # s - tolerated gap before declaring marker lost
 
 DOCK_POSES_FILE = '/tmp/aruco_dock_poses.yaml'
 
@@ -103,9 +114,11 @@ class UltimateMissionController(Node):
         self.latest_cam_z = 0.0
         self.latest_stamp = 0.0
         self.latest_stamp_by_id = {}   # {marker_id: timestamp}
-        self.launch_arm_time = -1.0    # For Station B
         self._cam_lock = threading.Lock()
         self._marker_lock = threading.Lock()
+
+        # Station B trigger — set by marker_cb when STATION_B_TRIGGER_MARKER_ID is seen
+        self.trigger_event = threading.Event()
 
         # Map Data
         self.map_data = None
@@ -118,8 +131,12 @@ class UltimateMissionController(Node):
         # --- ROS 2 Interfaces ---
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        self.cmd_vel_pub     = self.create_publisher(Twist, '/cmd_vel', 10)
-        self.phase_pub       = self.create_publisher(String, '/mission_phase', 10)
+        self.cmd_vel_pub          = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.phase_pub            = self.create_publisher(String, '/mission_phase', 10)
+        self.trigger_count_pub    = self.create_publisher(Int32, '/station_b_trigger_count', 10)
+        self.balls_fired_pub      = self.create_publisher(Int32, '/station_b_balls_fired', 10)
+        self._stb_trigger_count   = 0
+        self._stb_balls_fired     = 0
         self.flywheel_start_client = self.create_client(Trigger, '/start_flywheel')
         self.fire_ball_client      = self.create_client(Trigger, '/fire_ball')
         self.flywheel_stop_client  = self.create_client(Trigger, '/stop_flywheel')
@@ -135,6 +152,11 @@ class UltimateMissionController(Node):
         # Start the sequential mission thread
         self.mission_thread = threading.Thread(target=self.run_mission, daemon=True)
         self.mission_thread.start()
+
+    def _pub_int(self, publisher, value: int):
+        msg = Int32()
+        msg.data = value
+        publisher.publish(msg)
 
     def _call_service(self, client, label):
         """Generic blocking service call. Returns True on success."""
@@ -183,11 +205,15 @@ class UltimateMissionController(Node):
         subprocess.run(['pkill', '-f', 'explore_lite'], check=False)
         time.sleep(2.0)  # Let it fully die before relaunching
         self.get_logger().info('Relaunching explore_lite...')
-        subprocess.Popen([
-            'ros2', 'launch', 'explore_lite', 'explore.launch.py',
-            # Uncomment if using a custom params file:
-            # 'params_file:=/absolute/path/to/explore_params.yaml',
-        ])
+        proc = subprocess.Popen(
+            ['ros2', 'launch', 'explore_lite', 'explore.launch.py'],
+            env=os.environ.copy(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(1.0)  # Give it a moment to start
+        if proc.poll() is not None:
+            self.get_logger().error(f'explore_lite failed to start (exit code {proc.returncode})')
 
     # =========================================================================
     # PERSISTENCE (YAML)
@@ -242,6 +268,10 @@ class UltimateMissionController(Node):
                 self.latest_cam_z = p.z
                 self.latest_stamp = now
                 self.latest_stamp_by_id[marker.id] = now
+
+            # Station B trigger marker — signal the fire event
+            if marker.id == STATION_B_TRIGGER_MARKER_ID:
+                self.trigger_event.set()
 
             marker_id = marker.id
             with self._marker_lock:
@@ -337,15 +367,8 @@ class UltimateMissionController(Node):
             self._fire_sequence(STATION_A_FIRE_DELAYS, "Station A")
             self.execute_undock()
 
-        # --- PHASE 4: DOCK STATION B ---
+        # --- PHASE 4: DOCK STATION B (skipped) ---
         self._publish_phase('DOCK_B')
-        if self.execute_docking(navigator, STATION_B_MARKER_ID, "Station B"):
-            self.launch_arm_time = time.monotonic()
-            if self.wait_for_launch_signal():
-                log.info('>>> STATION B: FIRING SEQUENCE <<<')
-                self._fire_sequence(STATION_B_FIRE_DELAYS, "Station B")
-            else:
-                log.warn('Station B: Launch signal missed. Aborting fire sequence.')
 
         self._publish_phase('COMPLETE')
         log.info('='*50 + '\nALL MISSIONS COMPLETE!\n' + '='*50)
@@ -452,16 +475,186 @@ class UltimateMissionController(Node):
             time.sleep(0.05)
         self.cmd_vel_pub.publish(Twist())
 
-    def wait_for_launch_signal(self):
-        self.get_logger().info('Waiting for ArUco Launch Signal (Station B marker)...')
-        deadline = time.monotonic() + LAUNCH_SIGNAL_TIMEOUT
-        while time.monotonic() < deadline:
+    # =========================================================================
+    # STATION B — MOVING RECEPTACLE DOCKING
+    # =========================================================================
+    def _cmd_vel_approach_moving(self):
+        """
+        3-phase cmd_vel approach adapted from aruco_dock_moving.py.
+
+        Phase 1 — Align : rotate in place until |cam_x| < ALIGN_TOL.
+        Phase 2 — Drive : proportional control; exit to Phase 3 when cam_z
+                          drops below BLIND_THRESHOLD (camera blind zone).
+        Phase 3 — Reckon: dead-reckon remaining gap at half speed.
+
+        Main thread (MultiThreadedExecutor) keeps marker_cb firing — no
+        spin_once needed here.
+        """
+        log      = self.get_logger()
+        twist    = Twist()
+        deadline = time.monotonic() + APPROACH_TIMEOUT
+
+        def stop():
+            self.cmd_vel_pub.publish(Twist())
+
+        def fresh():
             with self._cam_lock:
-                stamp = self.latest_stamp_by_id.get(STATION_B_MARKER_ID, -1.0)
-            if stamp > self.launch_arm_time:
+                stamp = self.latest_stamp
+            return stamp > 0.0 and (time.monotonic() - stamp) < LOST_MARKER_S
+
+        # ── Phase 1: Align ────────────────────────────────────────────────────
+        log.info('Station B approach — Phase 1: aligning...')
+        while time.monotonic() < deadline:
+            if not fresh():
+                with self._cam_lock:
+                    first = self.latest_stamp == 0.0
+                if first:
+                    time.sleep(0.05)
+                    continue
+                stop()
+                log.error('Marker lost during alignment — aborting.')
+                return False
+
+            with self._cam_lock:
+                cam_x = self.latest_cam_x
+
+            ang_cmd = float(max(-MAX_ANGULAR, min(MAX_ANGULAR, -K_ANGULAR * cam_x)))
+            if abs(cam_x) < ALIGN_TOL:
+                log.info(f'Aligned: cam_x={cam_x:.4f} m')
+                break
+
+            twist.linear.x  = 0.0
+            twist.angular.z = ang_cmd
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+        else:
+            stop()
+            log.error('Alignment timed out.')
+            return False
+
+        # ── Phase 2: Drive ────────────────────────────────────────────────────
+        log.info('Station B approach — Phase 2: driving...')
+        last_cam_z = float('inf')
+
+        while time.monotonic() < deadline:
+            if not fresh():
+                if last_cam_z < BLIND_THRESHOLD:
+                    log.info(f'Marker lost in blind zone (last cam_z={last_cam_z:.3f} m) — dead-reckoning.')
+                    break
+                stop()
+                log.error(f'Marker lost unexpectedly (last cam_z={last_cam_z:.3f} m) — aborting.')
+                return False
+
+            with self._cam_lock:
+                cam_x = self.latest_cam_x
+                cam_z = self.latest_cam_z
+            last_cam_z = cam_z
+            dist_err   = cam_z - TARGET_DISTANCE
+
+            if abs(dist_err) < 0.01 and abs(cam_x) < ALIGN_TOL:
+                stop()
+                log.info(f'Approach complete: cam_x={cam_x:.4f} m  cam_z={cam_z:.4f} m')
                 return True
-            time.sleep(0.1)
+
+            twist.linear.x  = float(max(-MAX_LINEAR, min(MAX_LINEAR,  K_LINEAR  * dist_err)))
+            twist.angular.z = float(max(-MAX_ANGULAR, min(MAX_ANGULAR, -K_ANGULAR * cam_x)))
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+        else:
+            stop()
+            log.error('Drive phase timed out.')
+            return False
+
+        # ── Phase 3: Dead-reckoning ───────────────────────────────────────────
+        remaining = last_cam_z - TARGET_DISTANCE
+        if remaining <= 0.0:
+            stop()
+            log.info('Already at TARGET_DISTANCE — done.')
+            return True
+
+        drive_speed = MAX_LINEAR * 0.5
+        t_end = min(time.monotonic() + (remaining / drive_speed), deadline)
+        log.info(f'Station B approach — Phase 3: dead-reckoning {remaining:.3f} m...')
+        while time.monotonic() < t_end:
+            twist.linear.x  = drive_speed
+            twist.angular.z = 0.0
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+        stop()
+        log.info('Dead-reckoning complete — docked.')
+        return True
+
+    def execute_docking_b(self, navigator):
+        """Station B docking — uses alignment-first cmd_vel approach for moving target."""
+        log = self.get_logger()
+
+        with self._marker_lock:
+            if STATION_B_MARKER_ID not in self.detected_markers:
+                log.error('Station B marker missing. Skipping.')
+                return False
+            map_x, map_y, normal_yaw = self.detected_markers[STATION_B_MARKER_ID]
+
+        runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
+        runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
+        runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
+
+        for attempt in range(1, MAX_DOCK_RETRIES + 1):
+            log.info(f'Station B dock attempt {attempt}/{MAX_DOCK_RETRIES}...')
+
+            goal = PoseStamped()
+            goal.header.frame_id = 'map'
+            goal.header.stamp = navigator.get_clock().now().to_msg()
+            goal.pose.position.x, goal.pose.position.y = runway_x, runway_y
+            q = quaternion_from_euler(0, 0, runway_yaw)
+            goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
+
+            log.info('Navigating to Station B runway...')
+            navigator.goToPose(goal)
+            while not navigator.isTaskComplete():
+                time.sleep(0.1)
+
+            if navigator.getResult() != TaskResult.SUCCEEDED:
+                log.warn(f'Failed to reach Station B runway on attempt {attempt}.')
+                continue
+
+            log.info('Runway reached. Engaging moving-target approach...')
+            if self._cmd_vel_approach_moving():
+                return True
+            log.warn(f'Station B approach failed on attempt {attempt}.')
+
+        log.error(f'Station B docking failed after {MAX_DOCK_RETRIES} attempts.')
         return False
+
+    def _fire_station_b_sequence(self):
+        """
+        Fire STATION_B_BALLS balls at Station B.
+        Each ball is fired when the trigger marker (ID=STATION_B_TRIGGER_MARKER_ID)
+        is detected, indicating the hole has moved into position.
+        """
+        log = self.get_logger()
+        log.info('Station B: starting flywheel...')
+        self._call_service(self.flywheel_start_client, 'start_flywheel')
+
+        self._stb_trigger_count = 0
+        self._stb_balls_fired   = 0
+        self._pub_int(self.trigger_count_pub, 0)
+        self._pub_int(self.balls_fired_pub, 0)
+
+        for ball in range(1, STATION_B_BALLS + 1):
+            self.trigger_event.clear()
+            log.info(f'Station B: waiting for trigger marker (ball {ball}/{STATION_B_BALLS})...')
+            self.trigger_event.wait()
+            self._stb_trigger_count += 1
+            self._pub_int(self.trigger_count_pub, self._stb_trigger_count)
+            log.info(f'Station B: hole detected — firing ball {ball}')
+            self._call_service(self.fire_ball_client, 'fire_ball')
+            self._stb_balls_fired = ball
+            self._pub_int(self.balls_fired_pub, self._stb_balls_fired)
+            if ball < STATION_B_BALLS:
+                time.sleep(TRIGGER_COOLDOWN)  # prevent re-triggering on the same pass
+
+        log.info('Station B: all balls fired — stopping flywheel.')
+        self._call_service(self.flywheel_stop_client, 'stop_flywheel')
 
     # =========================================================================
     # BFS COVERAGE SWEEP
