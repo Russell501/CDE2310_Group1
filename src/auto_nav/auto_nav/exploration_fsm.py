@@ -27,7 +27,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 import tf2_ros
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped, Quaternion, Twist
 from std_msgs.msg import String, Int32
 from visualization_msgs.msg import MarkerArray
 from nav_msgs.msg import OccupancyGrid
@@ -134,6 +134,7 @@ class UltimateMissionController(Node):
         self.latest_stamp = 0.0
         self.latest_stamp_by_id = {}   # {marker_id: timestamp}
         self.latest_cam_by_id = {}  # {marker_id: (cam_x, cam_z, stamp)}
+        self.latest_marker_q_by_id = {}  # {marker_id: (qx, qy, qz, qw)}
         self._cam_lock = threading.Lock()
         self._marker_lock = threading.Lock()
 
@@ -266,12 +267,14 @@ class UltimateMissionController(Node):
             if p.z <= 0.0: continue
 
             now = time.monotonic()
+            q = marker.pose.orientation
             with self._cam_lock:
                 self.latest_cam_x = p.x          # kept for backward compat with visual_servo
                 self.latest_cam_z = p.z
                 self.latest_stamp = now
                 self.latest_stamp_by_id[marker.id] = now
                 self.latest_cam_by_id[marker.id] = (p.x, p.z, now)
+                self.latest_marker_q_by_id[marker.id] = (q.x, q.y, q.z, q.w)
 
             # Station B trigger marker — signal the fire event
             if marker.id == STATION_B_TRIGGER_MARKER_ID:
@@ -402,6 +405,21 @@ class UltimateMissionController(Node):
     # =========================================================================
     # HARDWARE & DOCKING LOGIC
     # =========================================================================
+    def _wait_for_live_marker(self, marker_id, timeout=10.0):
+        """Wait for a fresh live detection of marker_id and return (map_x, map_y, normal_yaw) or None."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._cam_lock:
+                entry = self.latest_cam_by_id.get(marker_id)
+                q_tuple = self.latest_marker_q_by_id.get(marker_id)
+            if entry is not None and q_tuple is not None:
+                cam_x, cam_z, stamp = entry
+                if time.monotonic() - stamp < 2.0:
+                    q_msg = Quaternion(x=q_tuple[0], y=q_tuple[1], z=q_tuple[2], w=q_tuple[3])
+                    return self.camera_to_map(cam_x, cam_z, q_msg)
+            time.sleep(0.1)
+        return None
+
     def execute_docking(self, navigator, marker_id, name):
         log = self.get_logger()
 
@@ -411,30 +429,61 @@ class UltimateMissionController(Node):
                 return False
             map_x, map_y, normal_yaw = self.detected_markers[marker_id]
 
-        runway_x = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
-        runway_y = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
-        runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
+        # YAML-based approach area
+        approach_x = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
+        approach_y = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
+        approach_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
 
         for attempt in range(1, MAX_DOCK_RETRIES + 1):
             log.info(f'{name} dock attempt {attempt}/{MAX_DOCK_RETRIES}...')
 
+            # Step 1: Navigate to general approach area using YAML pose
             goal = PoseStamped()
             goal.header.frame_id = 'map'
             goal.header.stamp = navigator.get_clock().now().to_msg()
-            goal.pose.position.x, goal.pose.position.y = runway_x, runway_y
-            q = quaternion_from_euler(0, 0, runway_yaw)
+            goal.pose.position.x, goal.pose.position.y = approach_x, approach_y
+            q = quaternion_from_euler(0, 0, approach_yaw)
             goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
 
-            log.info(f'Navigating to {name} Runway...')
+            log.info(f'Navigating to {name} approach area (YAML pose)...')
             navigator.goToPose(goal)
             while not navigator.isTaskComplete():
                 time.sleep(0.1)
 
             if navigator.getResult() != TaskResult.SUCCEEDED:
-                log.warn(f'Failed to reach {name} runway on attempt {attempt}.')
+                log.warn(f'Failed to reach {name} approach area on attempt {attempt}.')
                 continue
 
-            log.info('Runway reached. Engaging Visual Servoing...')
+            # Step 2: Acquire live marker and compute precise runway
+            log.info(f'{name}: approach area reached — acquiring live marker...')
+            live_pose = self._wait_for_live_marker(marker_id, timeout=10.0)
+            if live_pose is not None:
+                live_x, live_y, live_yaw = live_pose
+                runway_x = live_x + NAV2_APPROACH_DISTANCE * math.cos(live_yaw)
+                runway_y = live_y + NAV2_APPROACH_DISTANCE * math.sin(live_yaw)
+                runway_yaw = math.atan2(-math.sin(live_yaw), -math.cos(live_yaw))
+
+                log.info(f'{name}: live marker acquired at ({live_x:.2f}, {live_y:.2f}) — '
+                         f'navigating to refined runway ({runway_x:.2f}, {runway_y:.2f})...')
+                goal = PoseStamped()
+                goal.header.frame_id = 'map'
+                goal.header.stamp = navigator.get_clock().now().to_msg()
+                goal.pose.position.x, goal.pose.position.y = runway_x, runway_y
+                q = quaternion_from_euler(0, 0, runway_yaw)
+                goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
+
+                navigator.goToPose(goal)
+                while not navigator.isTaskComplete():
+                    time.sleep(0.1)
+
+                if navigator.getResult() != TaskResult.SUCCEEDED:
+                    log.warn(f'{name}: failed to reach refined runway on attempt {attempt}.')
+                    continue
+            else:
+                log.warn(f'{name}: no live marker detected — proceeding with visual servo from current position.')
+
+            # Step 3: Visual servo to close the final gap
+            log.info(f'{name}: runway reached — engaging visual servo...')
             if self.visual_servo():
                 return True
             log.warn(f'{name} visual servo failed on attempt {attempt}.')
