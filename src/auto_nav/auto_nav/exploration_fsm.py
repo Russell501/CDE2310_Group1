@@ -120,8 +120,12 @@ class UltimateMissionController(Node):
     def __init__(self):
         super().__init__('ultimate_mission_controller')
 
-        # Declare parameter to allow clearing the pose cache on startup
-        self.declare_parameter('clear_cache', False)
+        # Declare parameter to allow clearing the pose cache on startup.
+        # Default True: the map frame is anchored to each SLAM run's start pose,
+        # so poses from a previous run are in a different coordinate system and
+        # MUST NOT be reused. Set clear_cache:=false only if you know the map
+        # frame has been preserved (e.g. reusing a saved map).
+        self.declare_parameter('clear_cache', True)
         if self.get_parameter('clear_cache').value:
             self.get_logger().info('Clearing old dock poses cache...')
             if os.path.exists(DOCK_POSES_FILE):
@@ -287,19 +291,26 @@ class UltimateMissionController(Node):
                 self.trigger_event.set()
 
             marker_id = marker.id
-            with self._marker_lock:
-                already_known = marker_id in self.detected_markers
 
-            if not already_known:
-                # Reject obviously poor initial sightings
-                if abs(p.x) > 0.15 or p.z > 2.0 or p.z < 0.15:
-                    continue
-                map_pose = self.camera_to_map(p.x, p.z, marker.pose.orientation)
-                if map_pose:
-                    with self._marker_lock:
-                        self.detected_markers[marker_id] = map_pose
-                    self.save_poses()
-                    self.get_logger().info(f'NEW MARKER LOGGED: ID={marker_id} at Map({map_pose[0]:.2f}, {map_pose[1]:.2f})')
+            # Reject obviously poor sightings (too far, too close, too lateral).
+            # These are the same quality gates we used for first sightings — we
+            # don't want to overwrite a good stored pose with a garbage update.
+            if abs(p.x) > 0.15 or p.z > 2.0 or p.z < 0.15:
+                continue
+            map_pose = self.camera_to_map(p.x, p.z, marker.pose.orientation)
+            if not map_pose:
+                continue
+
+            with self._marker_lock:
+                was_known = marker_id in self.detected_markers
+                self.detected_markers[marker_id] = map_pose
+            self.save_poses()
+            if was_known:
+                self.get_logger().debug(
+                    f'MARKER REFRESHED: ID={marker_id} at Map({map_pose[0]:.2f}, {map_pose[1]:.2f})')
+            else:
+                self.get_logger().info(
+                    f'NEW MARKER LOGGED: ID={marker_id} at Map({map_pose[0]:.2f}, {map_pose[1]:.2f})')
 
     def camera_to_map(self, cam_x, cam_z, q_msg):
         """Converts observation to Map coordinates AND the outward Normal Yaw"""
