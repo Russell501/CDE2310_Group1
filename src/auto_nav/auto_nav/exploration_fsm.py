@@ -15,7 +15,6 @@ import math
 import time
 import yaml
 import threading
-import subprocess
 from collections import deque
 
 
@@ -79,9 +78,15 @@ UNDOCK_SPEED           = 0.06   # m/s
 VISIT_RADIUS  = 0.3 # m - Coverage sweep mark radius
 GOAL_SPACING  = 0.5 # m - Coverage sweep grid spacing
 
-MAX_EXPLORE_RESTARTS   = 2
-EXPLORE_MIN_RUNTIME    = 10.0   # s - ignore EXPLORATION_COMPLETE for this long after (re)launch
 EXPLORATION_TIMEOUT    = 600.0  # s - Max time to wait for EXPLORATION_COMPLETE before forcing proceed
+
+# Frontier cleanup — BFS fallback run AFTER explore_lite completes with missing markers.
+# Replaces the old restart_explore_lite() retry loop with an in-process nearest-frontier
+# driver that reuses the FSM's BasicNavigator. Ported from frontier_cleanup.py.
+FRONTIER_BLACKLIST_RADIUS = 0.30  # m - failed-goal exclusion radius (> Nav2 xy_goal_tolerance=0.25)
+FRONTIER_WALL_CLEARANCE   = 0.12  # m - min distance from obstacles when picking a frontier cell
+FRONTIER_MIN_CELLS        = 4     # min connected frontier size (at 0.05 m/cell ≈ 20 cm edge)
+FRONTIER_MAX_ITERATIONS   = 30    # safety cap on cleanup nav attempts per run
 
 # Station A — timed firing sequence (delay before each ball)
 STATION_A_FIRE_DELAYS = [0.0, 9.0, 1.0]
@@ -118,8 +123,9 @@ class UltimateMissionController(Node):
         # State Variables
         self.detected_markers = {}  # {id: (map_x, map_y, normal_yaw)}
         self.exploration_done = threading.Event()
-        self._explore_started_at = 0.0  # monotonic time of last explore_lite (re)launch
-        self._explore_proc = None  # Popen handle for currently-running explore_lite launch
+
+        # Frontier cleanup state — blacklist of failed (x, y) goal coords
+        self.frontier_blacklist = []
 
         # Live Camera Data
         self.latest_cam_x = 0.0
@@ -211,42 +217,6 @@ class UltimateMissionController(Node):
         self.phase_pub.publish(msg)
 
     # =========================================================================
-    # EXPLORE_LITE RESTART
-    # =========================================================================
-    def restart_explore_lite(self):
-        log = self.get_logger()
-
-        # Kill any existing handle we own
-        if self._explore_proc is not None and self._explore_proc.poll() is None:
-            log.info('Terminating tracked explore_lite process...')
-            self._explore_proc.terminate()
-            try:
-                self._explore_proc.wait(timeout=3.0)
-            except subprocess.TimeoutExpired:
-                log.warn('explore_lite did not terminate in 3s — killing.')
-                self._explore_proc.kill()
-                self._explore_proc.wait(timeout=2.0)
-
-        # Belt-and-suspenders: kill any orphaned explore_lite binaries (NOT the launcher).
-        # Match the binary path, not the substring "explore_lite", to avoid killing
-        # the `ros2 launch explore_lite ...` command we are about to spawn.
-        subprocess.run(['pkill', '-f', 'explore_lite/explore'], check=False)
-        time.sleep(2.0)
-
-        log.info('Relaunching explore_lite...')
-        self._explore_proc = subprocess.Popen(
-            ['ros2', 'launch', 'explore_lite', 'explore.launch.py'],
-            env=os.environ.copy(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        self._explore_started_at = time.monotonic()
-        self.exploration_done.clear()
-        time.sleep(1.0)
-        if self._explore_proc.poll() is not None:
-            log.error(f'explore_lite failed to start (exit code {self._explore_proc.returncode})')
-
-    # =========================================================================
     # PERSISTENCE (YAML)
     # =========================================================================
     def load_poses(self):
@@ -277,13 +247,6 @@ class UltimateMissionController(Node):
     # =========================================================================
     def explore_status_cb(self, msg: ExploreStatus):
         if msg.status == ExploreStatus.EXPLORATION_COMPLETE:
-            elapsed = time.monotonic() - self._explore_started_at
-            if elapsed < EXPLORE_MIN_RUNTIME:
-                self.get_logger().info(
-                    f'Ignoring EXPLORATION_COMPLETE — only {elapsed:.1f}s since (re)launch '
-                    f'(min {EXPLORE_MIN_RUNTIME}s).'
-                )
-                return
             if not self.exploration_done.is_set():
                 self.get_logger().info('>> EXPLORATION COMPLETE SIGNAL RECEIVED <<')
                 self.exploration_done.set()
@@ -376,32 +339,20 @@ class UltimateMissionController(Node):
         if have_all:
             log.info('YAML states loaded! Bypassing exploration wait.')
         else:
-            # Mark when we first start waiting on exploration so explore_status_cb
-            # can ignore stale EXPLORATION_COMPLETE messages from before we were ready.
-            if self._explore_started_at == 0.0:
-                self._explore_started_at = time.monotonic()
+            signalled = self.exploration_done.wait(timeout=EXPLORATION_TIMEOUT)
+            if not signalled:
+                log.warn('Exploration timeout — EXPLORATION_COMPLETE never received. Forcing proceed.')
+            self.exploration_done.clear()
 
-            for attempt in range(MAX_EXPLORE_RESTARTS + 1):
-                signalled = self.exploration_done.wait(timeout=EXPLORATION_TIMEOUT)
-                if not signalled:
-                    log.warn('Exploration timeout — EXPLORATION_COMPLETE never received. Forcing proceed.')
+            with self._marker_lock:
+                have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
+                found = list(self.detected_markers.keys())
+            log.info(f'Exploration ended. Markers found so far: {found}')
 
-                with self._marker_lock:
-                    have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
-                    found = list(self.detected_markers.keys())
-
-                log.info(f'Exploration ended (attempt {attempt + 1}/{MAX_EXPLORE_RESTARTS + 1}). '
-                         f'Markers found so far: {found}')
-
-                if have_all or attempt == MAX_EXPLORE_RESTARTS:
-                    break
-
-                log.warn(f'Not all markers found. Restarting explore_lite '
-                         f'({attempt + 1}/{MAX_EXPLORE_RESTARTS})...')
-                self._publish_phase('REMAP')
-                self.restart_explore_lite()
-                # Note: restart_explore_lite() handles exploration_done.clear() and
-                # resets _explore_started_at for the grace-period check.
+            if not have_all:
+                log.warn('Not all markers found — running in-process frontier cleanup.')
+                self._publish_phase('FRONTIER_CLEANUP')
+                self.run_frontier_cleanup(navigator)
 
         # --- PHASE 2: SWEEP (If needed) ---
         with self._marker_lock:
@@ -748,6 +699,176 @@ class UltimateMissionController(Node):
         self._call_service(self.flywheel_stop_client, 'stop_flywheel')
 
     # =========================================================================
+    # FRONTIER CLEANUP — BFS fallback to chase residual frontiers
+    # =========================================================================
+    # Ported from standalone frontier_cleanup.py. Runs AFTER explore_lite signals
+    # EXPLORATION_COMPLETE but some required markers are still missing. BFS through
+    # known free space from the robot to the nearest free cell bordering unknown,
+    # send it as a Nav2 goal via BasicNavigator, and blacklist failures so they
+    # aren't retried. Exits early when all REQUIRED_MARKERS are logged.
+    def run_frontier_cleanup(self, navigator):
+        log = self.get_logger()
+
+        while self.map_data is None or self.map_origin is None:
+            log.info('Frontier cleanup waiting for /map...')
+            time.sleep(0.5)
+
+        for iteration in range(FRONTIER_MAX_ITERATIONS):
+            with self._marker_lock:
+                if REQUIRED_MARKERS.issubset(self.detected_markers.keys()):
+                    log.info('All required markers found — ending frontier cleanup.')
+                    return
+
+            try:
+                tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                robot_x = tf.transform.translation.x
+                robot_y = tf.transform.translation.y
+            except Exception as e:
+                log.warn(f'TF lookup failed during frontier cleanup: {e}')
+                time.sleep(0.5)
+                continue
+
+            target = self._find_nearest_frontier(robot_x, robot_y)
+            if target is None:
+                unknown_left = int(np.sum(self.map_data == -1))
+                log.info(
+                    f'No reachable frontiers remain. '
+                    f'Unknown cells: {unknown_left}, blacklist size: {len(self.frontier_blacklist)}.'
+                )
+                return
+
+            gx, gy = target
+            goal_yaw = math.atan2(gy - robot_y, gx - robot_x)
+            log.info(
+                f'Frontier cleanup [{iteration + 1}/{FRONTIER_MAX_ITERATIONS}]: '
+                f'targeting ({gx:.2f}, {gy:.2f})'
+            )
+
+            goal = PoseStamped()
+            goal.header.frame_id = 'map'
+            goal.header.stamp = navigator.get_clock().now().to_msg()
+            goal.pose.position.x, goal.pose.position.y = gx, gy
+            q = quaternion_from_euler(0, 0, goal_yaw)
+            goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
+
+            navigator.goToPose(goal)
+            while not navigator.isTaskComplete():
+                with self._marker_lock:
+                    have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
+                if have_all:
+                    navigator.cancelTask()
+                    log.info('Missing markers found mid-transit — cancelling cleanup goal.')
+                    return
+                time.sleep(0.1)
+
+            if navigator.getResult() != TaskResult.SUCCEEDED:
+                log.warn(f'Frontier goal failed — blacklisting ({gx:.2f}, {gy:.2f}).')
+                self.frontier_blacklist.append((gx, gy))
+            else:
+                log.info('Frontier goal reached.')
+
+        log.warn(
+            f'Frontier cleanup hit iteration cap ({FRONTIER_MAX_ITERATIONS}) '
+            f'without completing the required marker set.'
+        )
+
+    # ---- frontier helpers (map → grid, BFS, validation) --------------------
+
+    def _world_to_grid(self, x, y):
+        col = int((x - self.map_origin.position.x) / self.map_resolution)
+        row = int((y - self.map_origin.position.y) / self.map_resolution)
+        return row, col
+
+    def _grid_to_world(self, row, col):
+        x = self.map_origin.position.x + (col + 0.5) * self.map_resolution
+        y = self.map_origin.position.y + (row + 0.5) * self.map_resolution
+        return x, y
+
+    def _is_frontier_cell(self, r, c):
+        """A free cell (0) with at least one unknown (-1) 4-neighbour."""
+        h, w = self.map_data.shape
+        if self.map_data[r, c] != 0:
+            return False
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < h and 0 <= nc < w:
+                if self.map_data[nr, nc] == -1:
+                    return True
+        return False
+
+    def _frontier_has_clearance(self, r, c):
+        """Reject cells too close to occupied (>0) cells so Nav2 accepts them."""
+        clearance_cells = int(math.ceil(FRONTIER_WALL_CLEARANCE / self.map_resolution))
+        h, w = self.map_data.shape
+        r0 = max(0, r - clearance_cells)
+        r1 = min(h, r + clearance_cells + 1)
+        c0 = max(0, c - clearance_cells)
+        c1 = min(w, c + clearance_cells + 1)
+        patch = self.map_data[r0:r1, c0:c1]
+        return not np.any(patch > 0)
+
+    def _is_frontier_blacklisted(self, x, y):
+        for bx, by in self.frontier_blacklist:
+            if math.hypot(x - bx, y - by) < FRONTIER_BLACKLIST_RADIUS:
+                return True
+        return False
+
+    def _frontier_connected_size(self, r, c):
+        """Count connected frontier cells starting from (r, c), capped."""
+        h, w = self.map_data.shape
+        cap = 20
+        seen = {(r, c)}
+        q = deque([(r, c)])
+        count = 0
+        while q and count < cap:
+            cr, cc = q.popleft()
+            count += 1
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = cr + dr, cc + dc
+                if (0 <= nr < h and 0 <= nc < w
+                        and (nr, nc) not in seen
+                        and self._is_frontier_cell(nr, nc)):
+                    seen.add((nr, nc))
+                    q.append((nr, nc))
+        return count
+
+    def _find_nearest_frontier(self, robot_x, robot_y):
+        """
+        BFS through free cells from the robot's grid cell. Return the first
+        valid frontier cell (big enough, clear of walls, not blacklisted).
+        """
+        h, w = self.map_data.shape
+        r0, c0 = self._world_to_grid(robot_x, robot_y)
+
+        if not (0 <= r0 < h and 0 <= c0 < w):
+            self.get_logger().warn('Robot is outside map bounds for frontier BFS.')
+            return None
+
+        seen = np.zeros_like(self.map_data, dtype=bool)
+        queue = deque()
+        queue.append((r0, c0))
+        seen[r0, c0] = True
+
+        while queue:
+            cr, cc = queue.popleft()
+
+            if self._is_frontier_cell(cr, cc):
+                if self._frontier_connected_size(cr, cc) >= FRONTIER_MIN_CELLS:
+                    if self._frontier_has_clearance(cr, cc):
+                        wx, wy = self._grid_to_world(cr, cc)
+                        if not self._is_frontier_blacklisted(wx, wy):
+                            return wx, wy
+
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = cr + dr, cc + dc
+                if (0 <= nr < h and 0 <= nc < w
+                        and not seen[nr, nc]
+                        and self.map_data[nr, nc] == 0):
+                    seen[nr, nc] = True
+                    queue.append((nr, nc))
+        return None
+
+    # =========================================================================
     # BFS COVERAGE SWEEP
     # =========================================================================
     def run_coverage_sweep(self, navigator):
@@ -835,13 +956,6 @@ def main(args=None):
     except KeyboardInterrupt:
         node.cmd_vel_pub.publish(Twist())
     finally:
-        if node._explore_proc is not None and node._explore_proc.poll() is None:
-            node.get_logger().info('Terminating background explore_lite process before shutdown...')
-            node._explore_proc.terminate()
-            try:
-                node._explore_proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                node._explore_proc.kill()
         node.destroy_node()
         rclpy.shutdown()
 
