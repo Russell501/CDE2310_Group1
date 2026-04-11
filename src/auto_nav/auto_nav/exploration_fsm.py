@@ -79,6 +79,7 @@ VISIT_RADIUS  = 0.3 # m - Coverage sweep mark radius
 GOAL_SPACING  = 0.5 # m - Coverage sweep grid spacing
 
 EXPLORATION_TIMEOUT    = 600.0  # s - Max time to wait for EXPLORATION_COMPLETE before forcing proceed
+SWEEP_PARTIAL_TIMEOUT  = 120.0  # s - BFS sweep timeout after at least one marker is found
 
 # Frontier cleanup — BFS fallback run AFTER explore_lite completes with missing markers.
 # Replaces the old restart_explore_lite() retry loop with an in-process nearest-frontier
@@ -886,11 +887,20 @@ class UltimateMissionController(Node):
         waypoints = self._bfs_all_waypoints(robot_x, robot_y)
         log.info(f'BFS sweep planned: {len(waypoints)} waypoints.')
 
+        partial_deadline = None  # set when at least one marker is found
+
         for i, (row, col) in enumerate(waypoints):
             with self._marker_lock:
                 have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
+                have_any = len(self.detected_markers) > 0
             if have_all:
-                log.info('Missing markers found! Ending sweep early.')
+                log.info('All markers found! Ending sweep early.')
+                return
+            if have_any and partial_deadline is None:
+                partial_deadline = time.monotonic() + SWEEP_PARTIAL_TIMEOUT
+                log.info(f'At least one marker found — sweep will timeout in {SWEEP_PARTIAL_TIMEOUT}s if the rest are not found.')
+            if partial_deadline is not None and time.monotonic() > partial_deadline:
+                log.warn(f'Sweep timeout — could not find all markers within {SWEEP_PARTIAL_TIMEOUT}s of first detection. Proceeding with what we have.')
                 return
 
             gx = self.map_origin.position.x + (col + 0.5) * self.map_resolution
@@ -900,10 +910,10 @@ class UltimateMissionController(Node):
                 tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
                 rx, ry = tf.transform.translation.x, tf.transform.translation.y
             except Exception:
-                rx, ry = gx, gy  
+                rx, ry = gx, gy
 
             goal_yaw = math.atan2(gy - ry, gx - rx)
-            
+
             goal = PoseStamped()
             goal.header.frame_id = 'map'
             goal.header.stamp = navigator.get_clock().now().to_msg()
@@ -917,8 +927,15 @@ class UltimateMissionController(Node):
                     have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
                 if have_all:
                     navigator.cancelTask()
+                    log.info('All markers found mid-transit! Ending sweep early.')
+                    return
+                if partial_deadline is not None and time.monotonic() > partial_deadline:
+                    navigator.cancelTask()
+                    log.warn(f'Sweep timeout mid-transit — proceeding with found markers.')
                     return
                 time.sleep(0.1)
+
+        log.info('BFS sweep complete — all waypoints visited.')
 
     def _bfs_all_waypoints(self, robot_x, robot_y):
         map_h, map_w = self.map_data.shape
