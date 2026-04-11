@@ -68,7 +68,8 @@ STATION_B_MARKER_ID = 1
 REQUIRED_MARKERS = {STATION_A_MARKER_ID, STATION_B_MARKER_ID}
 
 TARGET_DISTANCE        = 0.10   # m - Final dock distance
-NAV2_APPROACH_DISTANCE = 0.50   # m - Runway distance (Nav2 stops here)
+NAV2_APPROACH_DISTANCE = 0.50   # m - Precise runway distance from live marker
+YAML_APPROACH_DISTANCE = 1.0    # m - Coarse approach distance using YAML pose
 CAMERA_X_OFFSET        = 0.04   # m 
 MAX_DOCK_RETRIES       = 3
 
@@ -429,9 +430,9 @@ class UltimateMissionController(Node):
                 return False
             map_x, map_y, normal_yaw = self.detected_markers[marker_id]
 
-        # YAML-based approach area
-        approach_x = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
-        approach_y = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
+        # YAML-based approach area (wider radius — YAML pose may be inaccurate)
+        approach_x = map_x + YAML_APPROACH_DISTANCE * math.cos(normal_yaw)
+        approach_y = map_y + YAML_APPROACH_DISTANCE * math.sin(normal_yaw)
         approach_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
 
         for attempt in range(1, MAX_DOCK_RETRIES + 1):
