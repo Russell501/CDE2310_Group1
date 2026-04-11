@@ -12,7 +12,7 @@ import tkinter as tk
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import String, Int32
 from visualization_msgs.msg import MarkerArray
 from nav_msgs.msg import OccupancyGrid
@@ -86,11 +86,16 @@ class MissionMonitorNode(Node):
         self.state = state
 
         # Cartographer — detect via /map
-        self.create_subscription(OccupancyGrid, '/map', self._map_cb, 10)
+        map_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(OccupancyGrid, '/map', self._map_cb, map_qos)
 
         # Nav2 — detect via local costmap
         self.create_subscription(
-            OccupancyGrid, '/local_costmap/costmap', self._nav2_cb, 10)
+            OccupancyGrid, '/local_costmap/costmap', self._nav2_cb, map_qos)
 
         # explore_lite status
         self.create_subscription(
