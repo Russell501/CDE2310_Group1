@@ -84,7 +84,7 @@ EXPLORE_MIN_RUNTIME    = 10.0   # s - ignore EXPLORATION_COMPLETE for this long 
 EXPLORATION_TIMEOUT    = 600.0  # s - Max time to wait for EXPLORATION_COMPLETE before forcing proceed
 
 # Station A — timed firing sequence (delay before each ball)
-STATION_A_FIRE_DELAYS = [0.0, 9.0, 1.0]
+STATION_A_FIRE_DELAYS = [6.0, 9.0, 1.0]
 
 # Station B — trigger-based firing (moving receptacle)
 STATION_B_TRIGGER_MARKER_ID = 2     # ID of the marker that signals hole alignment
@@ -459,12 +459,30 @@ class UltimateMissionController(Node):
                 return False
             map_x, map_y, normal_yaw = self.detected_markers[marker_id]
 
-        runway_x = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
-        runway_y = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
-        runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
-
         for attempt in range(1, MAX_DOCK_RETRIES + 1):
             log.info(f'{name} dock attempt {attempt}/{MAX_DOCK_RETRIES}...')
+
+            # Step 1: Navigate toward stored marker, stopping YAML_APPROACH_DISTANCE short
+            try:
+                tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                robot_x = tf.transform.translation.x
+                robot_y = tf.transform.translation.y
+            except Exception:
+                log.warn(f'{name}: TF lookup failed — falling back to normal-based approach.')
+                robot_x = map_x + YAML_APPROACH_DISTANCE * math.cos(normal_yaw)
+                robot_y = map_y + YAML_APPROACH_DISTANCE * math.sin(normal_yaw)
+
+            dx = map_x - robot_x
+            dy = map_y - robot_y
+            dist = math.hypot(dx, dy)
+
+            if dist > YAML_APPROACH_DISTANCE:
+                approach_x = map_x - YAML_APPROACH_DISTANCE * (dx / dist)
+                approach_y = map_y - YAML_APPROACH_DISTANCE * (dy / dist)
+            else:
+                approach_x = robot_x
+                approach_y = robot_y
+            approach_yaw = math.atan2(dy, dx)
 
             goal = PoseStamped()
             goal.header.frame_id = 'map'
@@ -482,7 +500,38 @@ class UltimateMissionController(Node):
                 log.warn(f'Failed to reach {name} runway on attempt {attempt}.')
                 continue
 
-            log.info('Runway reached. Engaging Visual Servoing...')
+            # Step 2: Navigate to runway
+            with self._marker_lock:
+                if marker_id not in self.detected_markers:
+                    log.warn(f'{name}: marker lost — skipping attempt {attempt}.')
+                    continue
+                map_x, map_y, normal_yaw = self.detected_markers[marker_id]
+
+            runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
+            runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
+            runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
+
+            goal = PoseStamped()
+            goal.header.frame_id = 'map'
+            goal.header.stamp = navigator.get_clock().now().to_msg()
+            goal.pose.position.x, goal.pose.position.y = runway_x, runway_y
+            qx, qy, qz, qw = quaternion_from_euler(0, 0, runway_yaw)
+            goal.pose.orientation.x = qx
+            goal.pose.orientation.y = qy
+            goal.pose.orientation.z = qz
+            goal.pose.orientation.w = qw
+
+            log.info(f'Navigating to {name} runway...')
+            navigator.goToPose(goal)
+            while not navigator.isTaskComplete():
+                time.sleep(0.1)
+
+            if navigator.getResult() != TaskResult.SUCCEEDED:
+                log.warn(f'Failed to reach {name} runway on attempt {attempt}.')
+                continue
+
+            # Step 3: Visual servo to close the final gap
+            log.info(f'{name}: runway reached — engaging visual servo...')
             if self.visual_servo():
                 return True
             log.warn(f'{name} visual servo failed on attempt {attempt}.')
@@ -496,7 +545,7 @@ class UltimateMissionController(Node):
             return True
         twist = Twist()
         deadline = time.monotonic() + 25.0
-        last_cam_z = None   # None means marker not yet seen
+        last_cam_z = None
 
         while time.monotonic() < deadline:
             with self._cam_lock:
@@ -505,38 +554,35 @@ class UltimateMissionController(Node):
                 cam_z = self.latest_cam_z
 
             if time.monotonic() - stamp > 2.0:
-                break  # Lost marker, fall through to dead-reckon
+                break   # lost marker
 
-            last_cam_z = cam_z
-            dist_err = cam_z - TARGET_DISTANCE
+            last_cam_z  = cam_z
+            dist_err    = cam_z - TARGET_DISTANCE
 
             if abs(dist_err) < 0.01 and abs(cam_x) < 0.03:
                 self.cmd_vel_pub.publish(Twist())
-                return True  # Explicit success
+                return True
 
-            twist.linear.x = float(max(-0.08, min(0.08, 0.3 * dist_err)))
-            twist.angular.z = float(max(-0.5, min(0.5, -1.5 * cam_x)))
+            twist.linear.x  = float(max(-0.08, min(0.08, 0.3 * dist_err)))
+            twist.angular.z = float(max(-0.5,  min(0.5, -1.5 * cam_x)))
             if abs(cam_x) > 0.05:
                 twist.linear.x = 0.0
 
             self.cmd_vel_pub.publish(twist)
             time.sleep(0.05)
 
-        # Dead-reckoning: only attempt if marker was seen at least once
-        if last_cam_z is None:
-            self.cmd_vel_pub.publish(Twist())
-            return False  # Never saw the marker
-
-        remaining = last_cam_z - TARGET_DISTANCE
-        if remaining > 0:
-            twist.linear.x, twist.angular.z = 0.04, 0.0
-            t_end = time.monotonic() + (remaining / 0.04)
-            while time.monotonic() < min(t_end, deadline):
-                self.cmd_vel_pub.publish(twist)
-                time.sleep(0.05)
+        # Dead-reckon if marker was seen at least once
+        if last_cam_z is not None:
+            remaining = last_cam_z - TARGET_DISTANCE
+            if remaining > 0:
+                twist.linear.x, twist.angular.z = 0.04, 0.0
+                t_end = time.monotonic() + (remaining / 0.04)
+                while time.monotonic() < min(t_end, deadline):
+                    self.cmd_vel_pub.publish(twist)
+                    time.sleep(0.05)
 
         self.cmd_vel_pub.publish(Twist())
-        return False  # Dead-reckoning: best-effort, success unconfirmed
+        return False
 
     def execute_undock(self):
         self.get_logger().info(f'Undocking: Reversing {UNDOCK_DISTANCE}m...')
