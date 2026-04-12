@@ -412,10 +412,11 @@ class UltimateMissionController(Node):
 
         if have_a:
             self._publish_phase('DOCK_A')
-            if self.execute_docking(navigator, STATION_A_MARKER_ID, "Station A"):
-                log.info('>>> STATION A: FIRING SEQUENCE <<<')
-                self._fire_sequence(STATION_A_FIRE_DELAYS, "Station A")
-                self.execute_undock()
+            if not self.execute_docking(navigator, STATION_A_MARKER_ID, "Station A"):
+                log.warn('Station A docking failed — proceeding with fire sequence anyway.')
+            log.info('>>> STATION A: FIRING SEQUENCE <<<')
+            self._fire_sequence(STATION_A_FIRE_DELAYS, "Station A")
+            self.execute_undock()
         else:
             log.error('Skipping Station A — marker never detected.')
 
