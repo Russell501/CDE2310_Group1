@@ -82,17 +82,18 @@ GOAL_SPACING  = 0.5 # m - Coverage sweep grid spacing
 EXPLORATION_TIMEOUT    = 600.0  # s - Max time to wait for EXPLORATION_COMPLETE before forcing proceed
 SWEEP_PARTIAL_TIMEOUT  = 120.0  # s - BFS sweep timeout after at least one marker is found
 
-# Frontier cleanup — BFS fallback with standoff-pose approach. Runs AFTER explore_lite
-# completes with missing markers. Instead of navigating to the frontier cell itself
-# (which explore_lite already failed at), compute a standoff vantage point with full
-# clearance, validate it with a ComputePathToPose plan request, and navigate to the
-# planned path's endpoint. Ported from frontier_cleanup_standoff.py.
+# Frontier cleanup — short-hop BFS fallback. Runs AFTER explore_lite completes with
+# missing markers. Instead of navigating all the way to a frontier in one shot, we
+# BFS to the nearest frontier, trace a path through known free space, and hop along
+# it in small increments (hop_distance). After each hop the map has updated, so we
+# re-plan. Ported from frontier_short_hop.py.
 FRONTIER_BLACKLIST_RADIUS     = 0.30  # m - failed-goal exclusion radius (> Nav2 xy_goal_tolerance=0.25)
+FRONTIER_BLACKLIST_TTL        = 90.0  # s - time-decaying blacklist TTL
 FRONTIER_MIN_CELLS            = 4     # min connected frontier size (at 0.05 m/cell ≈ 20 cm edge)
 FRONTIER_MAX_ITERATIONS       = 30    # safety cap on cleanup nav attempts per run
-FRONTIER_STANDOFF_CLEARANCE   = 0.25  # m - required no-obstacle radius at the standoff pose
-FRONTIER_STANDOFF_MIN_DIST    = 0.30  # m - minimum walk-back distance from frontier
-FRONTIER_STANDOFF_MAX_DIST    = 1.20  # m - max walk-back before abandoning the frontier
+FRONTIER_HOP_DISTANCE         = 0.6   # m - max travel per hop goal
+FRONTIER_FINAL_STANDOFF       = 0.35  # m - stop this far from frontier on last hop
+FRONTIER_CELL_CLEARANCE       = 0.22  # m - clearance for any cell we'd send the robot to
 FRONTIER_FAILURES_BEFORE_SPIN = 3     # consecutive failures triggering a Spin recovery
 
 # Station A — timed firing sequence (delay before each ball)
@@ -135,8 +136,13 @@ class UltimateMissionController(Node):
         self.detected_markers = {}  # {id: (map_x, map_y, normal_yaw)}
         self.exploration_done = threading.Event()
 
-        # Frontier cleanup state — blacklist of failed (x, y) goal coords
+        # Frontier cleanup state — time-decaying blacklist: [(x, y, timestamp_sec), ...]
         self.frontier_blacklist = []
+
+        # Costmap data for clearance checking during frontier cleanup
+        self.costmap_data = None
+        self.costmap_resolution = None
+        self.costmap_origin = None
 
         # Live Camera Data
         self.latest_cam_x = 0.0
@@ -179,6 +185,7 @@ class UltimateMissionController(Node):
                                  QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE))
         
         self.create_subscription(OccupancyGrid, '/map', self.map_cb, 10)
+        self.create_subscription(OccupancyGrid, '/global_costmap/costmap', self.costmap_cb, 10)
 
         # Start the sequential mission thread
         self.mission_thread = threading.Thread(target=self.run_mission, daemon=True)
@@ -267,7 +274,13 @@ class UltimateMissionController(Node):
         w, h = msg.info.width, msg.info.height
         self.map_resolution = msg.info.resolution
         self.map_origin = msg.info.origin
-        self.map_data = np.array(msg.data).reshape((h, w))
+        self.map_data = np.array(msg.data, dtype=np.int8).reshape((h, w))
+
+    def costmap_cb(self, msg: OccupancyGrid):
+        w, h = msg.info.width, msg.info.height
+        self.costmap_resolution = msg.info.resolution
+        self.costmap_origin = msg.info.origin
+        self.costmap_data = np.array(msg.data, dtype=np.int8).reshape((h, w))
 
     def marker_cb(self, msg: MarkerArray):
         if not msg.markers: return
@@ -766,22 +779,17 @@ class UltimateMissionController(Node):
         self._call_service(self.flywheel_stop_client, 'stop_flywheel')
 
     # =========================================================================
-    # FRONTIER CLEANUP — BFS + standoff-pose fallback
+    # FRONTIER CLEANUP — short-hop BFS fallback
     # =========================================================================
-    # Ported from standalone frontier_cleanup_standoff.py. Runs AFTER explore_lite
+    # Ported from standalone frontier_short_hop.py. Runs AFTER explore_lite
     # signals EXPLORATION_COMPLETE but some required markers are still missing.
     #
     # Per iteration:
-    #   1. BFS through free space for the nearest frontier cell.
-    #   2. Compute a STANDOFF pose by walking back from the frontier toward
-    #      the robot until a cell with full clearance is found. The robot's
-    #      lidar/camera can observe the frontier from this vantage point
-    #      without Nav2 ever planning into the awkward cell itself.
-    #   3. Validate the standoff by requesting a path via ComputePathToPose
-    #      (navigator.getPath). Use the planned path's endpoint as the actual
-    #      goal — guaranteed reachable under the current costmap.
-    #   4. On failure, blacklist the frontier. After FRONTIER_FAILURES_BEFORE_SPIN
-    #      consecutive failures, issue a Spin recovery so SLAM can refresh.
+    #   1. BFS to the nearest frontier cell, recording parents.
+    #   2. Trace the BFS parent chain back to get a path through known free space.
+    #   3. Walk along that path until hop_distance or final_standoff_dist.
+    #   4. Send that intermediate point as a NavigateToPose goal.
+    #   5. On arrival the map has updated — re-run BFS. Repeat.
     def run_frontier_cleanup(self, navigator):
         log = self.get_logger()
 
@@ -790,6 +798,7 @@ class UltimateMissionController(Node):
             time.sleep(0.5)
 
         consecutive_failures = 0
+        final_retry_done = False
 
         for iteration in range(FRONTIER_MAX_ITERATIONS):
             with self._marker_lock:
@@ -817,68 +826,60 @@ class UltimateMissionController(Node):
                     time.sleep(0.1)
                 continue
 
-            found = self._find_nearest_frontier(robot_x, robot_y)
-            if found is None:
-                unknown_left = int(np.sum(self.map_data == -1))
+            h, w = self.map_data.shape
+            sr, sc = self._world_to_grid(robot_x, robot_y)
+            if not (0 <= sr < h and 0 <= sc < w):
+                log.warn('Robot outside map bounds')
+                time.sleep(0.5)
+                continue
+
+            frontier_rc, parents = self._bfs_to_nearest_frontier(sr, sc)
+            if frontier_rc is None:
+                unk = int(np.sum(self.map_data == -1))
+                if not final_retry_done and len(self.frontier_blacklist) > 0:
+                    log.info(
+                        f'No reachable frontiers — clearing blacklist '
+                        f'({len(self.frontier_blacklist)} entries) for final retry pass. '
+                        f'Unknown cells: {unk}')
+                    self.frontier_blacklist.clear()
+                    final_retry_done = True
+                    continue
                 log.info(
-                    f'No reachable frontiers remain. '
-                    f'Unknown cells: {unknown_left}, blacklist size: {len(self.frontier_blacklist)}.'
-                )
+                    f'No reachable frontiers remain. Unknown cells: {unk}')
                 return
 
-            fr, fc, fx, fy = found
-            standoff = self._compute_standoff(fr, fc, robot_x, robot_y)
-            if standoff is None:
+            # Found a frontier — reset final-retry flag
+            final_retry_done = False
+
+            fx, fy = self._grid_to_world(*frontier_rc)
+            hop = self._pick_hop_target(frontier_rc, parents, (robot_x, robot_y))
+            if hop is None:
+                now = time.monotonic()
                 log.warn(
-                    f'Frontier ({fx:.2f}, {fy:.2f}): no valid standoff — blacklisting.'
-                )
-                self.frontier_blacklist.append((fx, fy))
+                    f'Frontier ({fx:.2f},{fy:.2f}): no clear hop cell — blacklisting')
+                self.frontier_blacklist.append((fx, fy, now))
                 consecutive_failures += 1
                 continue
 
-            sx, sy, syaw = standoff
+            hx, hy, yaw, travelled = hop
             log.info(
                 f'Frontier cleanup [{iteration + 1}/{FRONTIER_MAX_ITERATIONS}]: '
-                f'frontier ({fx:.2f}, {fy:.2f}) -> standoff ({sx:.2f}, {sy:.2f})'
-            )
+                f'frontier ({fx:.2f},{fy:.2f}); hop to ({hx:.2f},{hy:.2f}) '
+                f'~{travelled:.2f}m')
 
-            # Build the standoff PoseStamped (aim robot at the frontier)
-            standoff_pose = PoseStamped()
-            standoff_pose.header.frame_id = 'map'
-            standoff_pose.header.stamp = navigator.get_clock().now().to_msg()
-            standoff_pose.pose.position.x = sx
-            standoff_pose.pose.position.y = sy
-            q = quaternion_from_euler(0, 0, syaw)
-            (standoff_pose.pose.orientation.x,
-             standoff_pose.pose.orientation.y,
-             standoff_pose.pose.orientation.z,
-             standoff_pose.pose.orientation.w) = q
+            goal = PoseStamped()
+            goal.header.frame_id = 'map'
+            goal.header.stamp = navigator.get_clock().now().to_msg()
+            goal.pose.position.x = hx
+            goal.pose.position.y = hy
+            q = quaternion_from_euler(0, 0, yaw)
+            goal.pose.orientation.x, goal.pose.orientation.y = q[0], q[1]
+            goal.pose.orientation.z, goal.pose.orientation.w = q[2], q[3]
 
-            # Validate reachability with ComputePathToPose before committing to navigation.
-            # use_start=False → planner uses robot's live pose as the start.
-            try:
-                path = navigator.getPath(PoseStamped(), standoff_pose, use_start=False)
-            except Exception as e:
-                log.warn(f'getPath raised {e} — blacklisting frontier.')
-                self.frontier_blacklist.append((fx, fy))
-                consecutive_failures += 1
-                continue
+            # Blame the frontier (not the hop) on failure
+            current_blacklist_xy = (fx, fy)
 
-            if path is None or not path.poses:
-                log.warn(
-                    f'Plan to standoff ({sx:.2f}, {sy:.2f}) failed — blacklisting frontier.'
-                )
-                self.frontier_blacklist.append((fx, fy))
-                consecutive_failures += 1
-                continue
-
-            # Use the actual planned endpoint — guaranteed reachable under current costmap
-            endpoint = path.poses[-1]
-            endpoint.header.frame_id = 'map'
-            endpoint.header.stamp = navigator.get_clock().now().to_msg()
-            log.info(f'Plan OK ({len(path.poses)} poses) — navigating to path endpoint.')
-
-            navigator.goToPose(endpoint)
+            navigator.goToPose(goal)
             while not navigator.isTaskComplete():
                 with self._marker_lock:
                     have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
@@ -890,12 +891,12 @@ class UltimateMissionController(Node):
 
             if navigator.getResult() != TaskResult.SUCCEEDED:
                 log.warn(
-                    f'NavigateToPose failed for frontier ({fx:.2f}, {fy:.2f}) — blacklisting.'
-                )
-                self.frontier_blacklist.append((fx, fy))
+                    f'NavigateToPose failed for frontier ({fx:.2f},{fy:.2f}) — blacklisting.')
+                now = time.monotonic()
+                self.frontier_blacklist.append((*current_blacklist_xy, now))
                 consecutive_failures += 1
             else:
-                log.info('Reached standoff — frontier should now be in sensor view.')
+                log.info('Hop reached — re-planning on fresh map.')
                 consecutive_failures = 0
 
         log.warn(
@@ -903,7 +904,7 @@ class UltimateMissionController(Node):
             f'without completing the required marker set.'
         )
 
-    # ---- frontier helpers (map -> grid, BFS, standoff) ---------------------
+    # ---- frontier helpers (map -> grid, BFS, short-hop) -------------------
 
     def _world_to_grid(self, x, y):
         col = int((x - self.map_origin.position.x) / self.map_resolution)
@@ -928,113 +929,170 @@ class UltimateMissionController(Node):
         return False
 
     def _has_clearance(self, r, c, radius_m):
-        """True iff no obstacle (>0) sits within radius_m of cell (r, c)."""
-        clearance_cells = int(math.ceil(radius_m / self.map_resolution))
+        """
+        Check that a cell has no obstacles within radius_m. Prefer the
+        live global costmap (inflation + dynamic obstacles + static layer).
+        Fall back to the raw SLAM map if costmap not yet received.
+        """
+        wx, wy = self._grid_to_world(r, c)
+        if self.costmap_data is not None:
+            cw = self.costmap_data.shape[1]
+            ch = self.costmap_data.shape[0]
+            cc_col = int((wx - self.costmap_origin.position.x)
+                         / self.costmap_resolution)
+            cc_row = int((wy - self.costmap_origin.position.y)
+                         / self.costmap_resolution)
+            cells = int(math.ceil(radius_m / self.costmap_resolution))
+            r0 = max(0, cc_row - cells)
+            r1 = min(ch, cc_row + cells + 1)
+            c0 = max(0, cc_col - cells)
+            c1 = min(cw, cc_col + cells + 1)
+            patch = self.costmap_data[r0:r1, c0:c1]
+            return not np.any((patch >= 50) & (patch != 255))
+        # Fallback: raw SLAM map
+        cells = int(math.ceil(radius_m / self.map_resolution))
         h, w = self.map_data.shape
-        r0 = max(0, r - clearance_cells)
-        r1 = min(h, r + clearance_cells + 1)
-        c0 = max(0, c - clearance_cells)
-        c1 = min(w, c + clearance_cells + 1)
-        patch = self.map_data[r0:r1, c0:c1]
-        return not np.any(patch > 0)
+        r0, r1 = max(0, r - cells), min(h, r + cells + 1)
+        c0, c1 = max(0, c - cells), min(w, c + cells + 1)
+        return not np.any(self.map_data[r0:r1, c0:c1] > 0)
+
+    def _prune_frontier_blacklist(self):
+        now = time.monotonic()
+        self.frontier_blacklist = [
+            (x, y, t) for (x, y, t) in self.frontier_blacklist
+            if now - t < FRONTIER_BLACKLIST_TTL]
 
     def _is_frontier_blacklisted(self, x, y):
-        for bx, by in self.frontier_blacklist:
-            if math.hypot(x - bx, y - by) < FRONTIER_BLACKLIST_RADIUS:
-                return True
-        return False
+        self._prune_frontier_blacklist()
+        return any(math.hypot(x - bx, y - by) < FRONTIER_BLACKLIST_RADIUS
+                   for bx, by, _ in self.frontier_blacklist)
 
-    def _frontier_connected_size(self, r, c):
-        """Count connected frontier cells starting from (r, c), capped."""
-        h, w = self.map_data.shape
-        cap = 20
+    def _frontier_cluster(self, r, c, cap=200):
+        """Flood-fill connected frontier cells, return list of (r,c)."""
         seen = {(r, c)}
         q = deque([(r, c)])
-        count = 0
-        while q and count < cap:
+        cluster = []
+        while q and len(cluster) < cap:
             cr, cc = q.popleft()
-            count += 1
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            cluster.append((cr, cc))
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                           (-1, -1), (-1, 1), (1, -1), (1, 1)]:
                 nr, nc = cr + dr, cc + dc
-                if (0 <= nr < h and 0 <= nc < w
-                        and (nr, nc) not in seen
-                        and self._is_frontier_cell(nr, nc)):
+                if (nr, nc) not in seen and self._is_frontier_cell(nr, nc):
                     seen.add((nr, nc))
                     q.append((nr, nc))
-        return count
+        return cluster
 
-    def _find_nearest_frontier(self, robot_x, robot_y):
+    def _snap_centroid_to_path(self, cluster, parents, sr, sc):
         """
-        BFS through free cells from the robot's grid cell. Return the first
-        frontier cell that is big enough and not blacklisted. Wall clearance
-        is NOT checked here — the standoff-pose computation handles that.
-        Returns (row, col, world_x, world_y) or None.
+        Compute the cluster centroid and find the cluster cell closest to
+        it that is also reachable (in the BFS parents map).
+        """
+        cr_avg = sum(r for r, _ in cluster) / len(cluster)
+        cc_avg = sum(c for _, c in cluster) / len(cluster)
+        reachable = [(r, c) for (r, c) in cluster if (r, c) in parents]
+        if not reachable:
+            candidates = []
+            for (r, c) in cluster:
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in parents:
+                        candidates.append((nr, nc))
+            if not candidates:
+                return None
+            reachable = candidates
+        return min(reachable,
+                   key=lambda rc: (rc[0] - cr_avg) ** 2 + (rc[1] - cc_avg) ** 2)
+
+    def _bfs_to_nearest_frontier(self, sr, sc):
+        """
+        BFS over free cells, recording parents. When we hit a frontier
+        cell, flood-fill its connected cluster and use the centroid
+        (snapped to nearest reachable free cell) as the goal candidate.
+        Returns (frontier_rc, parents) or (None, parents).
         """
         h, w = self.map_data.shape
-        r0, c0 = self._world_to_grid(robot_x, robot_y)
-
-        if not (0 <= r0 < h and 0 <= c0 < w):
-            self.get_logger().warn('Robot is outside map bounds for frontier BFS.')
-            return None
-
         seen = np.zeros_like(self.map_data, dtype=bool)
-        queue = deque()
-        queue.append((r0, c0))
-        seen[r0, c0] = True
+        parents = {}
+        q = deque([(sr, sc)])
+        seen[sr, sc] = True
+        parents[(sr, sc)] = None
 
-        while queue:
-            cr, cc = queue.popleft()
-
+        while q:
+            cr, cc = q.popleft()
             if self._is_frontier_cell(cr, cc):
-                wx, wy = self._grid_to_world(cr, cc)
-                if (not self._is_frontier_blacklisted(wx, wy)
-                        and self._frontier_connected_size(cr, cc) >= FRONTIER_MIN_CELLS):
-                    return cr, cc, wx, wy
-
+                cluster = self._frontier_cluster(cr, cc)
+                if len(cluster) >= FRONTIER_MIN_CELLS:
+                    centroid_rc = self._snap_centroid_to_path(
+                        cluster, parents, sr, sc)
+                    if centroid_rc is not None:
+                        wx, wy = self._grid_to_world(*centroid_rc)
+                        if not self._is_frontier_blacklisted(wx, wy):
+                            return centroid_rc, parents
             for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nr, nc = cr + dr, cc + dc
-                if (0 <= nr < h and 0 <= nc < w
-                        and not seen[nr, nc]
+                if (0 <= nr < h and 0 <= nc < w and not seen[nr, nc]
                         and self.map_data[nr, nc] == 0):
                     seen[nr, nc] = True
-                    queue.append((nr, nc))
-        return None
+                    parents[(nr, nc)] = (cr, cc)
+                    q.append((nr, nc))
+        return None, parents
 
-    def _compute_standoff(self, frontier_r, frontier_c, robot_x, robot_y):
+    def _pick_hop_target(self, frontier_rc, parents, robot_xy):
         """
-        Walk from the frontier cell back toward the robot, one map cell at a
-        time, and return the first free cell that:
-          (a) sits at least FRONTIER_STANDOFF_MIN_DIST from the frontier, and
-          (b) has full FRONTIER_STANDOFF_CLEARANCE around it.
-        Returns (world_x, world_y, yaw_facing_frontier) or None.
+        Walk the BFS path from robot -> frontier and pick the cell that is
+        either (a) hop_distance metres from the robot along the path, or
+        (b) final_standoff_dist metres before the frontier — whichever
+        comes first. The cell must have full clearance.
+        Returns (x, y, yaw, accumulated_dist) or None.
         """
-        fx, fy = self._grid_to_world(frontier_r, frontier_c)
-        dx, dy = robot_x - fx, robot_y - fy
-        dist = math.hypot(dx, dy)
-        if dist < 1e-6:
+        path = []
+        cur = frontier_rc
+        while cur is not None:
+            path.append(cur)
+            cur = parents.get(cur)
+        path.reverse()  # robot -> frontier
+
+        if len(path) < 2:
             return None
-        ux, uy = dx / dist, dy / dist  # unit vector frontier -> robot
 
-        step = self.map_resolution
-        max_steps = int(FRONTIER_STANDOFF_MAX_DIST / step)
-        h, w = self.map_data.shape
+        rx, ry = robot_xy
+        fx, fy = self._grid_to_world(*frontier_rc)
 
-        for i in range(1, max_steps + 1):
-            d = i * step
-            if d < FRONTIER_STANDOFF_MIN_DIST:
+        accumulated = 0.0
+        prev_xy = (rx, ry)
+        chosen = None
+
+        for cell in path[1:]:
+            cx, cy = self._grid_to_world(*cell)
+            accumulated += math.hypot(cx - prev_xy[0], cy - prev_xy[1])
+            prev_xy = (cx, cy)
+
+            dist_to_frontier = math.hypot(fx - cx, fy - cy)
+
+            if accumulated >= FRONTIER_HOP_DISTANCE:
+                if self._has_clearance(*cell, FRONTIER_CELL_CLEARANCE):
+                    chosen = cell
+                    break
                 continue
-            sx = fx + ux * d
-            sy = fy + uy * d
-            sr, sc = self._world_to_grid(sx, sy)
-            if not (0 <= sr < h and 0 <= sc < w):
-                return None
-            if self.map_data[sr, sc] != 0:
-                continue
-            if self._has_clearance(sr, sc, FRONTIER_STANDOFF_CLEARANCE):
-                # Aim the robot AT the frontier from the standoff pose
-                yaw = math.atan2(fy - sy, fx - sx)
-                return sx, sy, yaw
-        return None
+
+            if dist_to_frontier <= FRONTIER_FINAL_STANDOFF:
+                if self._has_clearance(*cell, FRONTIER_CELL_CLEARANCE):
+                    chosen = cell
+                    break
+
+        if chosen is None:
+            for cell in reversed(path[1:]):
+                if self._has_clearance(*cell, FRONTIER_CELL_CLEARANCE):
+                    chosen = cell
+                    break
+
+        if chosen is None:
+            return None
+
+        cx, cy = self._grid_to_world(*chosen)
+        yaw = math.atan2(fy - cy, fx - cx)
+        return cx, cy, yaw, accumulated
 
     # =========================================================================
     # BFS COVERAGE SWEEP
