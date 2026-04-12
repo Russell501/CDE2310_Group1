@@ -104,8 +104,9 @@ STATION_B_TRIGGER_MARKER_ID = 2     # ID of the marker that signals hole alignme
 STATION_B_BALLS             = 3     # number of balls to fire at Station B
 TRIGGER_COOLDOWN            = 5.0   # s - wait after firing for target to pass
 
-# Station B cmd_vel approach tuning
-ALIGN_TOL        = 0.02   # m  - |cam_x| threshold to finish alignment phase
+# cmd_vel approach tuning
+ALIGN_TOL_A      = 0.03   # m  - |cam_x| threshold for Station A alignment
+ALIGN_TOL_B      = 0.01   # m  - |cam_x| threshold for Station B alignment
 BLIND_THRESHOLD  = 0.20   # m  - cam_z below which detection becomes unreliable
 K_LINEAR         = 0.3    # m/s per m of distance error
 K_ANGULAR        = 1.5    # rad/s per m of lateral error
@@ -535,72 +536,13 @@ class UltimateMissionController(Node):
                 log.warn(f'Failed to reach {name} runway on attempt {attempt}.')
                 continue
 
-            # Step 3: Visual servo to close the final gap
-            log.info(f'{name}: runway reached — engaging visual servo...')
-            if self.visual_servo(marker_id):
+            # Step 3: Use the same 3-phase approach as Station B
+            log.info(f'{name}: runway reached — engaging approach...')
+            if self._cmd_vel_approach(marker_id):
                 return True
-            log.warn(f'{name} visual servo failed on attempt {attempt}.')
+            log.warn(f'{name} approach failed on attempt {attempt}.')
 
         log.error(f'{name} docking failed after {MAX_DOCK_RETRIES} attempts.')
-        return False
-
-    def visual_servo(self, marker_id=STATION_A_MARKER_ID):
-        if VISUAL_SERVO_STUBBED:
-            self.get_logger().warn('[TEST MODE] Visual servo stubbed — returning success.')
-            return True
-        log = self.get_logger()
-        twist = Twist()
-        deadline = time.monotonic() + 25.0
-        last_cam_z = None
-
-        # Wait up to 5s for a fresh detection before starting servo
-        log.info(f'Visual servo: waiting for fresh marker ID {marker_id}...')
-        while time.monotonic() < deadline:
-            with self._cam_lock:
-                entry = self.latest_cam_by_id.get(marker_id)
-            if entry is not None and (time.monotonic() - entry[2]) < 2.0:
-                log.info(f'Visual servo: marker acquired (cam_x={entry[0]:.3f}, cam_z={entry[1]:.3f})')
-                break
-            time.sleep(0.05)
-        else:
-            log.warn('Visual servo: marker never acquired — giving up.')
-            return False
-
-        while time.monotonic() < deadline:
-            with self._cam_lock:
-                entry = self.latest_cam_by_id.get(marker_id)
-            cam_x, cam_z, stamp = entry
-
-            if time.monotonic() - stamp > 2.0:
-                log.warn(f'Visual servo: marker lost (last seen {time.monotonic() - stamp:.1f}s ago)')
-                break   # lost marker
-
-            last_cam_z  = cam_z
-            dist_err    = cam_z - TARGET_DISTANCE
-
-            if abs(dist_err) < 0.01 and abs(cam_x) < ALIGN_TOL:
-                self.cmd_vel_pub.publish(Twist())
-                return True
-
-            twist.linear.x  = float(max(-0.08, min(0.08, 0.3 * dist_err)))
-            twist.angular.z = float(max(-0.5,  min(0.5, -1.5 * cam_x)))
-            if abs(cam_x) > 0.05:
-                twist.linear.x = 0.0
-
-            self.cmd_vel_pub.publish(twist)
-            time.sleep(0.05)
-
-        # Dead-reckon if marker was seen at least once
-        if last_cam_z is not None:
-            remaining = last_cam_z - TARGET_DISTANCE
-            if remaining > 0:
-                twist.linear.x, twist.angular.z = 0.04, 0.0
-                t_end = time.monotonic() + (remaining / 0.04)
-                while time.monotonic() < min(t_end, deadline):
-                    self.cmd_vel_pub.publish(twist)
-                    time.sleep(0.05)
-
-        self.cmd_vel_pub.publish(Twist())
         return False
 
     def execute_undock(self):
@@ -616,17 +558,14 @@ class UltimateMissionController(Node):
     # =========================================================================
     # STATION B — MOVING RECEPTACLE DOCKING
     # =========================================================================
-    def _cmd_vel_approach_moving(self):
+    def _cmd_vel_approach(self, marker_id, align_tol=ALIGN_TOL_A):
         """
-        3-phase cmd_vel approach adapted from aruco_dock_moving.py.
+        3-phase cmd_vel approach — shared by Station A and Station B.
 
         Phase 1 — Align : rotate in place until |cam_x| < ALIGN_TOL.
         Phase 2 — Drive : proportional control; exit to Phase 3 when cam_z
                           drops below BLIND_THRESHOLD (camera blind zone).
         Phase 3 — Reckon: dead-reckon remaining gap at half speed.
-
-        Main thread (MultiThreadedExecutor) keeps marker_cb firing — no
-        spin_once needed here.
         """
         log      = self.get_logger()
         twist    = Twist()
@@ -637,18 +576,18 @@ class UltimateMissionController(Node):
 
         def fresh():
             with self._cam_lock:
-                entry = self.latest_cam_by_id.get(STATION_B_MARKER_ID)
+                entry = self.latest_cam_by_id.get(marker_id)
             if entry is None:
                 return False
             _, _, stamp = entry
             return (time.monotonic() - stamp) < LOST_MARKER_S
 
         # ── Phase 1: Align ────────────────────────────────────────────────────
-        log.info('Station B approach — Phase 1: aligning...')
+        log.info(f'Approach (ID {marker_id}) — Phase 1: aligning...')
         while time.monotonic() < deadline:
             if not fresh():
                 with self._cam_lock:
-                    first = STATION_B_MARKER_ID not in self.latest_cam_by_id
+                    first = marker_id not in self.latest_cam_by_id
                 if first:
                     time.sleep(0.05)
                     continue
@@ -657,10 +596,10 @@ class UltimateMissionController(Node):
                 return False
 
             with self._cam_lock:
-                cam_x, _, _ = self.latest_cam_by_id[STATION_B_MARKER_ID]
+                cam_x, _, _ = self.latest_cam_by_id[marker_id]
 
             ang_cmd = float(max(-MAX_ANGULAR, min(MAX_ANGULAR, -K_ANGULAR * cam_x)))
-            if abs(cam_x) < ALIGN_TOL:
+            if abs(cam_x) < align_tol:
                 log.info(f'Aligned: cam_x={cam_x:.4f} m')
                 break
 
@@ -674,7 +613,7 @@ class UltimateMissionController(Node):
             return False
 
         # ── Phase 2: Drive ────────────────────────────────────────────────────
-        log.info('Station B approach — Phase 2: driving...')
+        log.info(f'Approach (ID {marker_id}) — Phase 2: driving...')
         last_cam_z = float('inf')
 
         while time.monotonic() < deadline:
@@ -687,11 +626,11 @@ class UltimateMissionController(Node):
                 return False
 
             with self._cam_lock:
-                cam_x, cam_z, _ = self.latest_cam_by_id[STATION_B_MARKER_ID]
+                cam_x, cam_z, _ = self.latest_cam_by_id[marker_id]
             last_cam_z = cam_z
             dist_err   = cam_z - TARGET_DISTANCE
 
-            if abs(dist_err) < 0.01 and abs(cam_x) < ALIGN_TOL:
+            if abs(dist_err) < 0.01 and abs(cam_x) < align_tol:
                 stop()
                 log.info(f'Approach complete: cam_x={cam_x:.4f} m  cam_z={cam_z:.4f} m')
                 return True
@@ -714,7 +653,7 @@ class UltimateMissionController(Node):
 
         drive_speed = MAX_LINEAR * 0.5
         t_end = min(time.monotonic() + (remaining / drive_speed), deadline)
-        log.info(f'Station B approach — Phase 3: dead-reckoning {remaining:.3f} m...')
+        log.info(f'Approach (ID {marker_id}) — Phase 3: dead-reckoning {remaining:.3f} m...')
         while time.monotonic() < t_end:
             twist.linear.x  = drive_speed
             twist.angular.z = 0.0
@@ -723,6 +662,10 @@ class UltimateMissionController(Node):
         stop()
         log.info('Dead-reckoning complete — docked.')
         return True
+
+    def _cmd_vel_approach_moving(self):
+        """Station B wrapper — calls shared approach with Station B marker ID."""
+        return self._cmd_vel_approach(STATION_B_MARKER_ID, align_tol=ALIGN_TOL_B)
 
     def execute_docking_b(self, navigator):
         """Station B docking — uses alignment-first cmd_vel approach for moving target."""
