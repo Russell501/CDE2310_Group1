@@ -39,7 +39,7 @@ NAV2_APPROACH_DISTANCE = 0.50   # m — how far in front of the marker to stop
 TARGET_DISTANCE        = 0.10   # m — final docking distance
 CAMERA_X_OFFSET        = 0.04   # m — camera offset from base_link
 
-FIRE_DELAYS = [0.0, 9.0, 1.0]  # pre-fire wait (s) before each of the 3 balls
+FIRE_DELAYS = [6.0, 9.0, 1.0]  # pre-fire wait (s) before each of the 3 balls
 
 
 # =============================================================================
