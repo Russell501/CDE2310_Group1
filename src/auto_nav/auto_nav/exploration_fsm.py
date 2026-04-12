@@ -668,7 +668,7 @@ class UltimateMissionController(Node):
         return self._cmd_vel_approach(STATION_B_MARKER_ID, align_tol=ALIGN_TOL_B)
 
     def execute_docking_b(self, navigator):
-        """Station B docking — uses alignment-first cmd_vel approach for moving target."""
+        """Station B docking — two-step Nav2 approach (same as Station A) then cmd_vel."""
         log = self.get_logger()
 
         with self._marker_lock:
@@ -677,19 +677,71 @@ class UltimateMissionController(Node):
                 return False
             map_x, map_y, normal_yaw = self.detected_markers[STATION_B_MARKER_ID]
 
-        runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
-        runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
-        runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
-
         for attempt in range(1, MAX_DOCK_RETRIES + 1):
             log.info(f'Station B dock attempt {attempt}/{MAX_DOCK_RETRIES}...')
+
+            # Step 1: Navigate to coarse approach area (YAML_APPROACH_DISTANCE from marker)
+            try:
+                tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                robot_x = tf.transform.translation.x
+                robot_y = tf.transform.translation.y
+            except Exception:
+                log.warn('Station B: TF lookup failed — falling back to normal-based approach.')
+                robot_x = map_x + YAML_APPROACH_DISTANCE * math.cos(normal_yaw)
+                robot_y = map_y + YAML_APPROACH_DISTANCE * math.sin(normal_yaw)
+
+            dx = map_x - robot_x
+            dy = map_y - robot_y
+            dist = math.hypot(dx, dy)
+
+            if dist > YAML_APPROACH_DISTANCE:
+                approach_x = map_x - YAML_APPROACH_DISTANCE * (dx / dist)
+                approach_y = map_y - YAML_APPROACH_DISTANCE * (dy / dist)
+            else:
+                approach_x = robot_x
+                approach_y = robot_y
+            approach_yaw = math.atan2(dy, dx)
+
+            goal = PoseStamped()
+            goal.header.frame_id = 'map'
+            goal.header.stamp = navigator.get_clock().now().to_msg()
+            goal.pose.position.x, goal.pose.position.y = approach_x, approach_y
+            q = quaternion_from_euler(0, 0, approach_yaw)
+            goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
+
+            log.info('Navigating to Station B approach area (YAML pose)...')
+            navigator.goToPose(goal)
+            while not navigator.isTaskComplete():
+                time.sleep(0.1)
+
+            if navigator.getResult() != TaskResult.SUCCEEDED:
+                log.warn(f'Failed to reach Station B approach area on attempt {attempt}.')
+                continue
+
+            # Step 2: Acquire live marker and compute precise runway
+            log.info('Station B: approach area reached — acquiring live marker...')
+            live_pose = self._wait_for_live_marker(STATION_B_MARKER_ID, timeout=10.0)
+            if live_pose is not None:
+                live_x, live_y, live_yaw = live_pose
+                log.info(f'Station B: live marker at ({live_x:.2f}, {live_y:.2f}) yaw={math.degrees(live_yaw):.1f}°')
+                runway_x   = live_x + NAV2_APPROACH_DISTANCE * math.cos(live_yaw)
+                runway_y   = live_y + NAV2_APPROACH_DISTANCE * math.sin(live_yaw)
+                runway_yaw = math.atan2(-math.sin(live_yaw), -math.cos(live_yaw))
+            else:
+                log.warn('Station B: no live marker — falling back to YAML pose for runway.')
+                runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
+                runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
+                runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
 
             goal = PoseStamped()
             goal.header.frame_id = 'map'
             goal.header.stamp = navigator.get_clock().now().to_msg()
             goal.pose.position.x, goal.pose.position.y = runway_x, runway_y
-            q = quaternion_from_euler(0, 0, runway_yaw)
-            goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
+            qx, qy, qz, qw = quaternion_from_euler(0, 0, runway_yaw)
+            goal.pose.orientation.x = qx
+            goal.pose.orientation.y = qy
+            goal.pose.orientation.z = qz
+            goal.pose.orientation.w = qw
 
             log.info('Navigating to Station B runway...')
             navigator.goToPose(goal)
@@ -700,7 +752,8 @@ class UltimateMissionController(Node):
                 log.warn(f'Failed to reach Station B runway on attempt {attempt}.')
                 continue
 
-            log.info('Runway reached. Engaging moving-target approach...')
+            # Step 3: cmd_vel approach
+            log.info('Station B: runway reached — engaging approach...')
             if self._cmd_vel_approach_moving():
                 return True
             log.warn(f'Station B approach failed on attempt {attempt}.')
