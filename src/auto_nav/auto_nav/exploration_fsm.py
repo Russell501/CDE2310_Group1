@@ -501,16 +501,20 @@ class UltimateMissionController(Node):
                 log.warn(f'Failed to reach {name} approach area on attempt {attempt}.')
                 continue
 
-            # Step 2: Navigate to runway
-            with self._marker_lock:
-                if marker_id not in self.detected_markers:
-                    log.warn(f'{name}: marker lost — skipping attempt {attempt}.')
-                    continue
-                map_x, map_y, normal_yaw = self.detected_markers[marker_id]
-
-            runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
-            runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
-            runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
+            # Step 2: Acquire live marker and compute precise runway
+            log.info(f'{name}: approach area reached — acquiring live marker...')
+            live_pose = self._wait_for_live_marker(marker_id, timeout=10.0)
+            if live_pose is not None:
+                live_x, live_y, live_yaw = live_pose
+                log.info(f'{name}: live marker at ({live_x:.2f}, {live_y:.2f}) yaw={math.degrees(live_yaw):.1f}°')
+                runway_x   = live_x + NAV2_APPROACH_DISTANCE * math.cos(live_yaw)
+                runway_y   = live_y + NAV2_APPROACH_DISTANCE * math.sin(live_yaw)
+                runway_yaw = math.atan2(-math.sin(live_yaw), -math.cos(live_yaw))
+            else:
+                log.warn(f'{name}: no live marker — falling back to YAML pose for runway.')
+                runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
+                runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
+                runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
 
             goal = PoseStamped()
             goal.header.frame_id = 'map'
@@ -533,34 +537,48 @@ class UltimateMissionController(Node):
 
             # Step 3: Visual servo to close the final gap
             log.info(f'{name}: runway reached — engaging visual servo...')
-            if self.visual_servo():
+            if self.visual_servo(marker_id):
                 return True
             log.warn(f'{name} visual servo failed on attempt {attempt}.')
 
         log.error(f'{name} docking failed after {MAX_DOCK_RETRIES} attempts.')
         return False
 
-    def visual_servo(self):
+    def visual_servo(self, marker_id=STATION_A_MARKER_ID):
         if VISUAL_SERVO_STUBBED:
             self.get_logger().warn('[TEST MODE] Visual servo stubbed — returning success.')
             return True
+        log = self.get_logger()
         twist = Twist()
         deadline = time.monotonic() + 25.0
         last_cam_z = None
 
+        # Wait up to 5s for a fresh detection before starting servo
+        log.info(f'Visual servo: waiting for fresh marker ID {marker_id}...')
         while time.monotonic() < deadline:
             with self._cam_lock:
-                stamp = self.latest_stamp
-                cam_x = self.latest_cam_x
-                cam_z = self.latest_cam_z
+                entry = self.latest_cam_by_id.get(marker_id)
+            if entry is not None and (time.monotonic() - entry[2]) < 2.0:
+                log.info(f'Visual servo: marker acquired (cam_x={entry[0]:.3f}, cam_z={entry[1]:.3f})')
+                break
+            time.sleep(0.05)
+        else:
+            log.warn('Visual servo: marker never acquired — giving up.')
+            return False
+
+        while time.monotonic() < deadline:
+            with self._cam_lock:
+                entry = self.latest_cam_by_id.get(marker_id)
+            cam_x, cam_z, stamp = entry
 
             if time.monotonic() - stamp > 2.0:
+                log.warn(f'Visual servo: marker lost (last seen {time.monotonic() - stamp:.1f}s ago)')
                 break   # lost marker
 
             last_cam_z  = cam_z
             dist_err    = cam_z - TARGET_DISTANCE
 
-            if abs(dist_err) < 0.01 and abs(cam_x) < 0.03:
+            if abs(dist_err) < 0.01 and abs(cam_x) < ALIGN_TOL:
                 self.cmd_vel_pub.publish(Twist())
                 return True
 
