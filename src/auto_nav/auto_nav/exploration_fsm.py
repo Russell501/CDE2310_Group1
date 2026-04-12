@@ -105,7 +105,7 @@ STATION_B_BALLS             = 3     # number of balls to fire at Station B
 TRIGGER_COOLDOWN            = 5.0   # s - wait after firing for target to pass
 
 # Station B cmd_vel approach tuning
-ALIGN_TOL        = 0.03   # m  - |cam_x| threshold to finish alignment phase
+ALIGN_TOL        = 0.02   # m  - |cam_x| threshold to finish alignment phase
 BLIND_THRESHOLD  = 0.20   # m  - cam_z below which detection becomes unreliable
 K_LINEAR         = 0.3    # m/s per m of distance error
 K_ANGULAR        = 1.5    # rad/s per m of lateral error
