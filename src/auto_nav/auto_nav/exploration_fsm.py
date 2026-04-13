@@ -68,8 +68,8 @@ STATION_B_MARKER_ID = 1
 REQUIRED_MARKERS = {STATION_A_MARKER_ID, STATION_B_MARKER_ID}
 
 TARGET_DISTANCE        = 0.10   # m - Final dock distance
-NAV2_APPROACH_DISTANCE = 0.50   # m - Precise runway distance from live marker
-YAML_APPROACH_DISTANCE = 1.0    # m - Coarse approach distance using YAML pose
+NAV2_APPROACH_DISTANCE = 0.35   # m - Precise runway distance from live marker
+YAML_APPROACH_DISTANCE = 0.6    # m - Coarse approach distance using YAML pose
 CAMERA_X_OFFSET        = 0.04   # m 
 MAX_DOCK_RETRIES       = 3
 
