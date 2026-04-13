@@ -430,6 +430,37 @@ class UltimateMissionController(Node):
         else:
             log.error('Skipping Station B — marker never detected.')
 
+        # --- PHASE 5: POST-DOCKING EXPLORATION ---
+        # Wait for explore_lite to finish if still running
+        if not self.exploration_done.is_set():
+            log.info('='*50 + '\nPHASE 5: WAITING FOR EXPLORE_LITE\n' + '='*50)
+            self._publish_phase('POST_EXPLORE_WAIT')
+            signalled = self.exploration_done.wait(timeout=EXPLORATION_TIMEOUT)
+            if not signalled:
+                log.warn('Exploration timeout — explore_lite never finished. Checking frontiers anyway.')
+            self.exploration_done.clear()
+
+        # Check map for remaining frontiers
+        if self.map_data is not None and self.map_origin is not None:
+            try:
+                tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                robot_x = tf.transform.translation.x
+                robot_y = tf.transform.translation.y
+                sr = int((robot_y - self.map_origin.position.y) / self.map_resolution)
+                sc = int((robot_x - self.map_origin.position.x) / self.map_resolution)
+                self.frontier_blacklist.clear()
+                frontier_rc, _ = self._bfs_to_nearest_frontier(sr, sc)
+                if frontier_rc is not None:
+                    log.info('='*50 + '\nPHASE 5: POST-DOCKING BFS SWEEP\n' + '='*50)
+                    self._publish_phase('POST_SWEEP')
+                    self.run_coverage_sweep(navigator)
+                else:
+                    log.info('No remaining frontiers — map is fully explored.')
+            except Exception:
+                log.warn('Could not check frontiers — TF lookup failed.')
+        else:
+            log.warn('No map data available — skipping frontier check.')
+
         self._publish_phase('COMPLETE')
         log.info('='*50 + '\nALL MISSIONS COMPLETE!\n' + '='*50)
         navigator.destroy_node()
