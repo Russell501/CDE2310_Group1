@@ -502,9 +502,13 @@ class UltimateMissionController(Node):
                 log.warn(f'Failed to reach {name} approach area on attempt {attempt}.')
                 continue
 
-            # Step 2: Acquire live marker and compute precise runway
+            # Step 2: Acquire live marker — spin 360° if not immediately visible
             log.info(f'{name}: approach area reached — acquiring live marker...')
-            live_pose = self._wait_for_live_marker(marker_id, timeout=10.0)
+            live_pose = self._wait_for_live_marker(marker_id, timeout=5.0)
+            if live_pose is None:
+                log.warn(f'{name}: marker not visible — spinning to search...')
+                live_pose = self._spin_until_marker(marker_id)
+
             if live_pose is not None:
                 live_x, live_y, live_yaw = live_pose
                 log.info(f'{name}: live marker at ({live_x:.2f}, {live_y:.2f}) yaw={math.degrees(live_yaw):.1f}°')
@@ -512,10 +516,8 @@ class UltimateMissionController(Node):
                 runway_y   = live_y + NAV2_APPROACH_DISTANCE * math.sin(live_yaw)
                 runway_yaw = math.atan2(-math.sin(live_yaw), -math.cos(live_yaw))
             else:
-                log.warn(f'{name}: no live marker — falling back to YAML pose for runway.')
-                runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
-                runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
-                runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
+                log.warn(f'{name}: marker not found after spin on attempt {attempt}.')
+                continue
 
             goal = PoseStamped()
             goal.header.frame_id = 'map'
@@ -667,6 +669,28 @@ class UltimateMissionController(Node):
         """Station B wrapper — calls shared approach with Station B marker ID."""
         return self._cmd_vel_approach(STATION_B_MARKER_ID, align_tol=ALIGN_TOL_B)
 
+    def _spin_until_marker(self, marker_id, spin_speed=0.4, timeout=15.0):
+        """Spin in place up to 360° looking for marker_id. Returns live pose or None."""
+        log = self.get_logger()
+        log.info(f'Spinning to find marker ID {marker_id}...')
+        twist = Twist()
+        twist.angular.z = spin_speed
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            with self._cam_lock:
+                entry = self.latest_cam_by_id.get(marker_id)
+            if entry is not None and (time.monotonic() - entry[2]) < 2.0:
+                self.cmd_vel_pub.publish(Twist())
+                log.info(f'Marker ID {marker_id} found during spin.')
+                return self._wait_for_live_marker(marker_id, timeout=5.0)
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+        log.warn(f'Spin complete — marker ID {marker_id} not found.')
+        return None
+
     def execute_docking_b(self, navigator):
         """Station B docking — two-step Nav2 approach (same as Station A) then cmd_vel."""
         log = self.get_logger()
@@ -718,9 +742,13 @@ class UltimateMissionController(Node):
                 log.warn(f'Failed to reach Station B approach area on attempt {attempt}.')
                 continue
 
-            # Step 2: Acquire live marker and compute precise runway
+            # Step 2: Acquire live marker — spin 360° if not immediately visible
             log.info('Station B: approach area reached — acquiring live marker...')
-            live_pose = self._wait_for_live_marker(STATION_B_MARKER_ID, timeout=10.0)
+            live_pose = self._wait_for_live_marker(STATION_B_MARKER_ID, timeout=5.0)
+            if live_pose is None:
+                log.warn('Station B: marker not visible — spinning to search...')
+                live_pose = self._spin_until_marker(STATION_B_MARKER_ID)
+
             if live_pose is not None:
                 live_x, live_y, live_yaw = live_pose
                 log.info(f'Station B: live marker at ({live_x:.2f}, {live_y:.2f}) yaw={math.degrees(live_yaw):.1f}°')
@@ -728,10 +756,8 @@ class UltimateMissionController(Node):
                 runway_y   = live_y + NAV2_APPROACH_DISTANCE * math.sin(live_yaw)
                 runway_yaw = math.atan2(-math.sin(live_yaw), -math.cos(live_yaw))
             else:
-                log.warn('Station B: no live marker — falling back to YAML pose for runway.')
-                runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
-                runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
-                runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
+                log.warn(f'Station B: marker not found after spin on attempt {attempt}.')
+                continue
 
             goal = PoseStamped()
             goal.header.frame_id = 'map'
