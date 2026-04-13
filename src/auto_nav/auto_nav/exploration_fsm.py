@@ -68,8 +68,8 @@ STATION_B_MARKER_ID = 1
 REQUIRED_MARKERS = {STATION_A_MARKER_ID, STATION_B_MARKER_ID}
 
 TARGET_DISTANCE        = 0.10   # m - Final dock distance
-NAV2_APPROACH_DISTANCE = 0.50   # m - Precise runway distance from live marker
-YAML_APPROACH_DISTANCE = 1.0    # m - Coarse approach distance using YAML pose
+NAV2_APPROACH_DISTANCE = 0.35   # m - Precise runway distance from live marker
+YAML_APPROACH_DISTANCE = 0.6    # m - Coarse approach distance using YAML pose
 CAMERA_X_OFFSET        = 0.04   # m 
 MAX_DOCK_RETRIES       = 3
 
@@ -104,8 +104,9 @@ STATION_B_TRIGGER_MARKER_ID = 2     # ID of the marker that signals hole alignme
 STATION_B_BALLS             = 3     # number of balls to fire at Station B
 TRIGGER_COOLDOWN            = 5.0   # s - wait after firing for target to pass
 
-# Station B cmd_vel approach tuning
-ALIGN_TOL        = 0.03   # m  - |cam_x| threshold to finish alignment phase
+# cmd_vel approach tuning
+ALIGN_TOL_A      = 0.03   # m  - |cam_x| threshold for Station A alignment
+ALIGN_TOL_B      = 0.01   # m  - |cam_x| threshold for Station B alignment
 BLIND_THRESHOLD  = 0.20   # m  - cam_z below which detection becomes unreliable
 K_LINEAR         = 0.3    # m/s per m of distance error
 K_ANGULAR        = 1.5    # rad/s per m of lateral error
@@ -412,10 +413,11 @@ class UltimateMissionController(Node):
 
         if have_a:
             self._publish_phase('DOCK_A')
-            if self.execute_docking(navigator, STATION_A_MARKER_ID, "Station A"):
-                log.info('>>> STATION A: FIRING SEQUENCE <<<')
-                self._fire_sequence(STATION_A_FIRE_DELAYS, "Station A")
-                self.execute_undock()
+            if not self.execute_docking(navigator, STATION_A_MARKER_ID, "Station A"):
+                log.warn('Station A docking failed — proceeding with fire sequence anyway.')
+            log.info('>>> STATION A: FIRING SEQUENCE <<<')
+            self._fire_sequence(STATION_A_FIRE_DELAYS, "Station A")
+            self.execute_undock()
         else:
             log.error('Skipping Station A — marker never detected.')
 
@@ -500,16 +502,22 @@ class UltimateMissionController(Node):
                 log.warn(f'Failed to reach {name} approach area on attempt {attempt}.')
                 continue
 
-            # Step 2: Navigate to runway
-            with self._marker_lock:
-                if marker_id not in self.detected_markers:
-                    log.warn(f'{name}: marker lost — skipping attempt {attempt}.')
-                    continue
-                map_x, map_y, normal_yaw = self.detected_markers[marker_id]
+            # Step 2: Acquire live marker — spin 360° if not immediately visible
+            log.info(f'{name}: approach area reached — acquiring live marker...')
+            live_pose = self._wait_for_live_marker(marker_id, timeout=5.0)
+            if live_pose is None:
+                log.warn(f'{name}: marker not visible — spinning to search...')
+                live_pose = self._spin_until_marker(marker_id)
 
-            runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
-            runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
-            runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
+            if live_pose is not None:
+                live_x, live_y, live_yaw = live_pose
+                log.info(f'{name}: live marker at ({live_x:.2f}, {live_y:.2f}) yaw={math.degrees(live_yaw):.1f}°')
+                runway_x   = live_x + NAV2_APPROACH_DISTANCE * math.cos(live_yaw)
+                runway_y   = live_y + NAV2_APPROACH_DISTANCE * math.sin(live_yaw)
+                runway_yaw = math.atan2(-math.sin(live_yaw), -math.cos(live_yaw))
+            else:
+                log.warn(f'{name}: marker not found after spin on attempt {attempt}.')
+                continue
 
             goal = PoseStamped()
             goal.header.frame_id = 'map'
@@ -530,58 +538,13 @@ class UltimateMissionController(Node):
                 log.warn(f'Failed to reach {name} runway on attempt {attempt}.')
                 continue
 
-            # Step 3: Visual servo to close the final gap
-            log.info(f'{name}: runway reached — engaging visual servo...')
-            if self.visual_servo():
+            # Step 3: Use the same 3-phase approach as Station B
+            log.info(f'{name}: runway reached — engaging approach...')
+            if self._cmd_vel_approach(marker_id):
                 return True
-            log.warn(f'{name} visual servo failed on attempt {attempt}.')
+            log.warn(f'{name} approach failed on attempt {attempt}.')
 
         log.error(f'{name} docking failed after {MAX_DOCK_RETRIES} attempts.')
-        return False
-
-    def visual_servo(self):
-        if VISUAL_SERVO_STUBBED:
-            self.get_logger().warn('[TEST MODE] Visual servo stubbed — returning success.')
-            return True
-        twist = Twist()
-        deadline = time.monotonic() + 25.0
-        last_cam_z = None
-
-        while time.monotonic() < deadline:
-            with self._cam_lock:
-                stamp = self.latest_stamp
-                cam_x = self.latest_cam_x
-                cam_z = self.latest_cam_z
-
-            if time.monotonic() - stamp > 2.0:
-                break   # lost marker
-
-            last_cam_z  = cam_z
-            dist_err    = cam_z - TARGET_DISTANCE
-
-            if abs(dist_err) < 0.01 and abs(cam_x) < 0.03:
-                self.cmd_vel_pub.publish(Twist())
-                return True
-
-            twist.linear.x  = float(max(-0.08, min(0.08, 0.3 * dist_err)))
-            twist.angular.z = float(max(-0.5,  min(0.5, -1.5 * cam_x)))
-            if abs(cam_x) > 0.05:
-                twist.linear.x = 0.0
-
-            self.cmd_vel_pub.publish(twist)
-            time.sleep(0.05)
-
-        # Dead-reckon if marker was seen at least once
-        if last_cam_z is not None:
-            remaining = last_cam_z - TARGET_DISTANCE
-            if remaining > 0:
-                twist.linear.x, twist.angular.z = 0.04, 0.0
-                t_end = time.monotonic() + (remaining / 0.04)
-                while time.monotonic() < min(t_end, deadline):
-                    self.cmd_vel_pub.publish(twist)
-                    time.sleep(0.05)
-
-        self.cmd_vel_pub.publish(Twist())
         return False
 
     def execute_undock(self):
@@ -597,17 +560,14 @@ class UltimateMissionController(Node):
     # =========================================================================
     # STATION B — MOVING RECEPTACLE DOCKING
     # =========================================================================
-    def _cmd_vel_approach_moving(self):
+    def _cmd_vel_approach(self, marker_id, align_tol=ALIGN_TOL_A):
         """
-        3-phase cmd_vel approach adapted from aruco_dock_moving.py.
+        3-phase cmd_vel approach — shared by Station A and Station B.
 
         Phase 1 — Align : rotate in place until |cam_x| < ALIGN_TOL.
         Phase 2 — Drive : proportional control; exit to Phase 3 when cam_z
                           drops below BLIND_THRESHOLD (camera blind zone).
         Phase 3 — Reckon: dead-reckon remaining gap at half speed.
-
-        Main thread (MultiThreadedExecutor) keeps marker_cb firing — no
-        spin_once needed here.
         """
         log      = self.get_logger()
         twist    = Twist()
@@ -618,18 +578,18 @@ class UltimateMissionController(Node):
 
         def fresh():
             with self._cam_lock:
-                entry = self.latest_cam_by_id.get(STATION_B_MARKER_ID)
+                entry = self.latest_cam_by_id.get(marker_id)
             if entry is None:
                 return False
             _, _, stamp = entry
             return (time.monotonic() - stamp) < LOST_MARKER_S
 
         # ── Phase 1: Align ────────────────────────────────────────────────────
-        log.info('Station B approach — Phase 1: aligning...')
+        log.info(f'Approach (ID {marker_id}) — Phase 1: aligning...')
         while time.monotonic() < deadline:
             if not fresh():
                 with self._cam_lock:
-                    first = STATION_B_MARKER_ID not in self.latest_cam_by_id
+                    first = marker_id not in self.latest_cam_by_id
                 if first:
                     time.sleep(0.05)
                     continue
@@ -638,10 +598,10 @@ class UltimateMissionController(Node):
                 return False
 
             with self._cam_lock:
-                cam_x, _, _ = self.latest_cam_by_id[STATION_B_MARKER_ID]
+                cam_x, _, _ = self.latest_cam_by_id[marker_id]
 
             ang_cmd = float(max(-MAX_ANGULAR, min(MAX_ANGULAR, -K_ANGULAR * cam_x)))
-            if abs(cam_x) < ALIGN_TOL:
+            if abs(cam_x) < align_tol:
                 log.info(f'Aligned: cam_x={cam_x:.4f} m')
                 break
 
@@ -655,7 +615,7 @@ class UltimateMissionController(Node):
             return False
 
         # ── Phase 2: Drive ────────────────────────────────────────────────────
-        log.info('Station B approach — Phase 2: driving...')
+        log.info(f'Approach (ID {marker_id}) — Phase 2: driving...')
         last_cam_z = float('inf')
 
         while time.monotonic() < deadline:
@@ -668,11 +628,11 @@ class UltimateMissionController(Node):
                 return False
 
             with self._cam_lock:
-                cam_x, cam_z, _ = self.latest_cam_by_id[STATION_B_MARKER_ID]
+                cam_x, cam_z, _ = self.latest_cam_by_id[marker_id]
             last_cam_z = cam_z
             dist_err   = cam_z - TARGET_DISTANCE
 
-            if abs(dist_err) < 0.01 and abs(cam_x) < ALIGN_TOL:
+            if abs(dist_err) < 0.01 and abs(cam_x) < align_tol:
                 stop()
                 log.info(f'Approach complete: cam_x={cam_x:.4f} m  cam_z={cam_z:.4f} m')
                 return True
@@ -695,7 +655,7 @@ class UltimateMissionController(Node):
 
         drive_speed = MAX_LINEAR * 0.5
         t_end = min(time.monotonic() + (remaining / drive_speed), deadline)
-        log.info(f'Station B approach — Phase 3: dead-reckoning {remaining:.3f} m...')
+        log.info(f'Approach (ID {marker_id}) — Phase 3: dead-reckoning {remaining:.3f} m...')
         while time.monotonic() < t_end:
             twist.linear.x  = drive_speed
             twist.angular.z = 0.0
@@ -705,8 +665,34 @@ class UltimateMissionController(Node):
         log.info('Dead-reckoning complete — docked.')
         return True
 
+    def _cmd_vel_approach_moving(self):
+        """Station B wrapper — calls shared approach with Station B marker ID."""
+        return self._cmd_vel_approach(STATION_B_MARKER_ID, align_tol=ALIGN_TOL_B)
+
+    def _spin_until_marker(self, marker_id, spin_speed=0.4, timeout=15.0):
+        """Spin in place up to 360° looking for marker_id. Returns live pose or None."""
+        log = self.get_logger()
+        log.info(f'Spinning to find marker ID {marker_id}...')
+        twist = Twist()
+        twist.angular.z = spin_speed
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            with self._cam_lock:
+                entry = self.latest_cam_by_id.get(marker_id)
+            if entry is not None and (time.monotonic() - entry[2]) < 2.0:
+                self.cmd_vel_pub.publish(Twist())
+                log.info(f'Marker ID {marker_id} found during spin.')
+                return self._wait_for_live_marker(marker_id, timeout=5.0)
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+        log.warn(f'Spin complete — marker ID {marker_id} not found.')
+        return None
+
     def execute_docking_b(self, navigator):
-        """Station B docking — uses alignment-first cmd_vel approach for moving target."""
+        """Station B docking — two-step Nav2 approach (same as Station A) then cmd_vel."""
         log = self.get_logger()
 
         with self._marker_lock:
@@ -715,19 +701,73 @@ class UltimateMissionController(Node):
                 return False
             map_x, map_y, normal_yaw = self.detected_markers[STATION_B_MARKER_ID]
 
-        runway_x   = map_x + NAV2_APPROACH_DISTANCE * math.cos(normal_yaw)
-        runway_y   = map_y + NAV2_APPROACH_DISTANCE * math.sin(normal_yaw)
-        runway_yaw = math.atan2(-math.sin(normal_yaw), -math.cos(normal_yaw))
-
         for attempt in range(1, MAX_DOCK_RETRIES + 1):
             log.info(f'Station B dock attempt {attempt}/{MAX_DOCK_RETRIES}...')
+
+            # Step 1: Navigate to coarse approach area (YAML_APPROACH_DISTANCE from marker)
+            try:
+                tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                robot_x = tf.transform.translation.x
+                robot_y = tf.transform.translation.y
+            except Exception:
+                log.warn('Station B: TF lookup failed — falling back to normal-based approach.')
+                robot_x = map_x + YAML_APPROACH_DISTANCE * math.cos(normal_yaw)
+                robot_y = map_y + YAML_APPROACH_DISTANCE * math.sin(normal_yaw)
+
+            dx = map_x - robot_x
+            dy = map_y - robot_y
+            dist = math.hypot(dx, dy)
+
+            if dist > YAML_APPROACH_DISTANCE:
+                approach_x = map_x - YAML_APPROACH_DISTANCE * (dx / dist)
+                approach_y = map_y - YAML_APPROACH_DISTANCE * (dy / dist)
+            else:
+                approach_x = robot_x
+                approach_y = robot_y
+            approach_yaw = math.atan2(dy, dx)
+
+            goal = PoseStamped()
+            goal.header.frame_id = 'map'
+            goal.header.stamp = navigator.get_clock().now().to_msg()
+            goal.pose.position.x, goal.pose.position.y = approach_x, approach_y
+            q = quaternion_from_euler(0, 0, approach_yaw)
+            goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
+
+            log.info('Navigating to Station B approach area (YAML pose)...')
+            navigator.goToPose(goal)
+            while not navigator.isTaskComplete():
+                time.sleep(0.1)
+
+            if navigator.getResult() != TaskResult.SUCCEEDED:
+                log.warn(f'Failed to reach Station B approach area on attempt {attempt}.')
+                continue
+
+            # Step 2: Acquire live marker — spin 360° if not immediately visible
+            log.info('Station B: approach area reached — acquiring live marker...')
+            live_pose = self._wait_for_live_marker(STATION_B_MARKER_ID, timeout=5.0)
+            if live_pose is None:
+                log.warn('Station B: marker not visible — spinning to search...')
+                live_pose = self._spin_until_marker(STATION_B_MARKER_ID)
+
+            if live_pose is not None:
+                live_x, live_y, live_yaw = live_pose
+                log.info(f'Station B: live marker at ({live_x:.2f}, {live_y:.2f}) yaw={math.degrees(live_yaw):.1f}°')
+                runway_x   = live_x + NAV2_APPROACH_DISTANCE * math.cos(live_yaw)
+                runway_y   = live_y + NAV2_APPROACH_DISTANCE * math.sin(live_yaw)
+                runway_yaw = math.atan2(-math.sin(live_yaw), -math.cos(live_yaw))
+            else:
+                log.warn(f'Station B: marker not found after spin on attempt {attempt}.')
+                continue
 
             goal = PoseStamped()
             goal.header.frame_id = 'map'
             goal.header.stamp = navigator.get_clock().now().to_msg()
             goal.pose.position.x, goal.pose.position.y = runway_x, runway_y
-            q = quaternion_from_euler(0, 0, runway_yaw)
-            goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
+            qx, qy, qz, qw = quaternion_from_euler(0, 0, runway_yaw)
+            goal.pose.orientation.x = qx
+            goal.pose.orientation.y = qy
+            goal.pose.orientation.z = qz
+            goal.pose.orientation.w = qw
 
             log.info('Navigating to Station B runway...')
             navigator.goToPose(goal)
@@ -738,7 +778,8 @@ class UltimateMissionController(Node):
                 log.warn(f'Failed to reach Station B runway on attempt {attempt}.')
                 continue
 
-            log.info('Runway reached. Engaging moving-target approach...')
+            # Step 3: cmd_vel approach
+            log.info('Station B: runway reached — engaging approach...')
             if self._cmd_vel_approach_moving():
                 return True
             log.warn(f'Station B approach failed on attempt {attempt}.')
