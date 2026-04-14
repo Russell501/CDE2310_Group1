@@ -15,6 +15,7 @@ import math
 import time
 import yaml
 import threading
+import subprocess
 from collections import deque
 
 
@@ -79,6 +80,7 @@ UNDOCK_SPEED           = 0.06   # m/s
 VISIT_RADIUS  = 0.3 # m - Coverage sweep mark radius
 GOAL_SPACING  = 0.5 # m - Coverage sweep grid spacing
 
+INITIAL_BFS_DURATION   = 15.0   # s - BFS sweep before launching explore_lite
 EXPLORATION_TIMEOUT    = 600.0  # s - Max time to wait for EXPLORATION_COMPLETE before forcing proceed
 SWEEP_PARTIAL_TIMEOUT  = 120.0  # s - BFS sweep timeout after at least one marker is found
 
@@ -203,7 +205,11 @@ class UltimateMissionController(Node):
             self.get_logger().error(f'{label} service not available — skipping.')
             return False
         future = client.call_async(Trigger.Request())
+        deadline = time.monotonic() + 10.0
         while not future.done():
+            if time.monotonic() > deadline:
+                self.get_logger().warn(f'{label} service call timed out — proceeding.')
+                return True
             time.sleep(0.05)
         result = future.result()
         if result and result.success:
@@ -364,16 +370,26 @@ class UltimateMissionController(Node):
             except Exception:
                 time.sleep(0.5)
 
-        # --- PHASE 1: EXPLORE ---
-        log.info('='*50 + '\nPHASE 1: EXPLORATION\n' + '='*50)
-        self._publish_phase('EXPLORE')
-
+        # --- PHASE 1a: INITIAL BFS (quick map seeding) ---
         with self._marker_lock:
             have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
 
         if have_all:
-            log.info('YAML states loaded! Bypassing exploration wait.')
+            log.info('YAML states loaded! Bypassing exploration.')
         else:
+            log.info('='*50 + f'\nPHASE 1a: INITIAL BFS ({INITIAL_BFS_DURATION:.0f}s)\n' + '='*50)
+            self._publish_phase('INITIAL_BFS')
+            self._run_timed_bfs(navigator, INITIAL_BFS_DURATION)
+
+            with self._marker_lock:
+                have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
+
+        # --- PHASE 1b: EXPLORE_LITE ---
+        if not have_all:
+            log.info('='*50 + '\nPHASE 1b: EXPLORE_LITE\n' + '='*50)
+            self._publish_phase('EXPLORE')
+            explore_proc = self._launch_explore_lite()
+
             signalled = self.exploration_done.wait(timeout=EXPLORATION_TIMEOUT)
             if not signalled:
                 log.warn('Exploration timeout — EXPLORATION_COMPLETE never received. Forcing proceed.')
@@ -1149,6 +1165,80 @@ class UltimateMissionController(Node):
         cx, cy = self._grid_to_world(*chosen)
         yaw = math.atan2(fy - cy, fx - cx)
         return cx, cy, yaw, accumulated
+
+    # =========================================================================
+    # INITIAL TIMED BFS & EXPLORE_LITE LAUNCHER
+    # =========================================================================
+    def _run_timed_bfs(self, navigator, duration):
+        """Run BFS coverage sweep for at most `duration` seconds, then return."""
+        log = self.get_logger()
+        while self.map_data is None or self.map_origin is None:
+            log.info('Waiting for map data...')
+            time.sleep(0.5)
+
+        try:
+            tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+            robot_x, robot_y = tf.transform.translation.x, tf.transform.translation.y
+        except Exception as e:
+            log.error(f'Cannot get robot pose for initial BFS: {e}')
+            return
+
+        waypoints = self._bfs_all_waypoints(robot_x, robot_y)
+        log.info(f'Initial BFS: {len(waypoints)} waypoints, running for {duration:.0f}s.')
+        deadline = time.monotonic() + duration
+
+        for i, (row, col) in enumerate(waypoints):
+            if time.monotonic() > deadline:
+                log.info('Initial BFS time limit reached.')
+                navigator.cancelTask()
+                return
+            with self._marker_lock:
+                if REQUIRED_MARKERS.issubset(self.detected_markers.keys()):
+                    log.info('All markers found during initial BFS!')
+                    navigator.cancelTask()
+                    return
+
+            gx = self.map_origin.position.x + (col + 0.5) * self.map_resolution
+            gy = self.map_origin.position.y + (row + 0.5) * self.map_resolution
+
+            try:
+                tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                rx, ry = tf.transform.translation.x, tf.transform.translation.y
+            except Exception:
+                rx, ry = gx, gy
+
+            goal_yaw = math.atan2(gy - ry, gx - rx)
+            goal = PoseStamped()
+            goal.header.frame_id = 'map'
+            goal.header.stamp = navigator.get_clock().now().to_msg()
+            goal.pose.position.x, goal.pose.position.y = gx, gy
+            q = quaternion_from_euler(0, 0, goal_yaw)
+            goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
+
+            navigator.goToPose(goal)
+            while not navigator.isTaskComplete():
+                if time.monotonic() > deadline:
+                    navigator.cancelTask()
+                    log.info('Initial BFS time limit reached mid-transit.')
+                    return
+                with self._marker_lock:
+                    if REQUIRED_MARKERS.issubset(self.detected_markers.keys()):
+                        navigator.cancelTask()
+                        log.info('All markers found mid-transit during initial BFS!')
+                        return
+                time.sleep(0.1)
+
+        log.info('Initial BFS: all waypoints visited before time limit.')
+
+    def _launch_explore_lite(self):
+        """Launch explore_lite as a subprocess. Returns the Popen handle."""
+        self.get_logger().info('Launching explore_lite...')
+        proc = subprocess.Popen(
+            ['ros2', 'launch', 'explore_lite', 'explore.launch.py'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return proc
 
     # =========================================================================
     # BFS COVERAGE SWEEP

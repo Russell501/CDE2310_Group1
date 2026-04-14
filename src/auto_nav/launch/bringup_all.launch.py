@@ -4,7 +4,8 @@
 # Startup order (event-driven, no blind timers):
 #   1. Cartographer  — starts immediately
 #   2. Nav2          — starts when Cartographer prints CARTOGRAPHER_READY
-#   3. explore_lite  — starts when Nav2 prints NAV2_READY
+#   3. FSM           — starts when Nav2 prints NAV2_READY
+#   (explore_lite is launched by the FSM after an initial 15s BFS sweep)
 #
 # To find the right trigger strings:
 #   Run each subsystem manually and note the log line printed when it is ready.
@@ -87,13 +88,6 @@ def generate_launch_description():
         'use_sim_time:=false',
     ]
 
-    explore_cmd = [
-        'ros2', 'launch',
-        'explore_lite', 'explore.launch.py',
-        # Uncomment and set path if using a custom params file:
-        # 'params_file:=/absolute/path/to/explore_params.yaml',
-    ]
-
     fsm_node = Node(
         package='auto_nav',
         executable='mission_controller',
@@ -118,39 +112,26 @@ def generate_launch_description():
         )
     )
 
-    # Step 3: Nav2 ready → launch explore_lite
-    on_nav2_ready = RegisterEventHandler(
-        OnProcessIO(
-            on_stdout=_make_trigger(
-                NAV2_READY,
-                explore_cmd, 'explore_process',
-                'Nav2 ready — launching explore_lite...',
-                launched,
-            ),
-        )
-    )
-
-    # Step 4: explore_lite ready → launch FSM
-    def on_explore_ready_cb(event):
+    # Step 3: Nav2 ready → launch FSM (FSM handles explore_lite startup)
+    def on_nav2_ready_cb(event):
         if 'fsm_node' in launched:
             return []
         text = (event.text.decode('utf-8', errors='replace')
                 if isinstance(event.text, bytes) else str(event.text))
-        if EXPLORE_READY in text:
+        if NAV2_READY in text:
             launched.add('fsm_node')
             return [
-                LogInfo(msg='explore_lite ready — launching mission FSM...'),
+                LogInfo(msg='Nav2 ready — launching mission FSM...'),
                 fsm_node,
             ]
         return []
 
-    on_explore_ready = RegisterEventHandler(
-        OnProcessIO(on_stdout=on_explore_ready_cb)
+    on_nav2_ready = RegisterEventHandler(
+        OnProcessIO(on_stdout=on_nav2_ready_cb)
     )
 
     return LaunchDescription([
         cartographer,
         on_cartographer_ready,
         on_nav2_ready,
-        on_explore_ready,
     ])
