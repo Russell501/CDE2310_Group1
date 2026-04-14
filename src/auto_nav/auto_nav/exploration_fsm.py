@@ -79,6 +79,10 @@ UNDOCK_SPEED           = 0.06   # m/s
 
 VISIT_RADIUS  = 0.3 # m - Coverage sweep mark radius
 GOAL_SPACING  = 0.5 # m - Coverage sweep grid spacing
+BFS_SWEEP_GOAL_SPACING = 0.3  # m - Tighter grid for post-explore BFS sweep
+BFS_SPIN_SPEED = 1.0 # rad/s - spin speed at each BFS waypoint
+BFS_SPIN_DURATION = 6.5  # s - approx one full 360° at BFS_SPIN_SPEED
+BFS_SWEEP_INFLATION = 0.15  # m - reduced inflation during BFS sweep
 
 INITIAL_BFS_DURATION   = 15.0   # s - BFS sweep before launching explore_lite
 EXPLORATION_TIMEOUT    = 600.0  # s - Max time to wait for EXPLORATION_COMPLETE before forcing proceed
@@ -205,18 +209,8 @@ class UltimateMissionController(Node):
             self.get_logger().error(f'{label} service not available — skipping.')
             return False
         future = client.call_async(Trigger.Request())
-        deadline = time.monotonic() + 10.0
-        while not future.done():
-            if time.monotonic() > deadline:
-                self.get_logger().warn(f'{label} service call timed out — proceeding.')
-                return True
-            time.sleep(0.05)
-        result = future.result()
-        if result and result.success:
-            self.get_logger().info(f'{label}: {result.message}')
-            return True
-        self.get_logger().error(f'{label} service call failed.')
-        return False
+        self.get_logger().info(f'{label}: command sent (fire-and-forget).')
+        return True
 
     def _fire_sequence(self, delays, station_name):
         """
@@ -1258,77 +1252,129 @@ class UltimateMissionController(Node):
         )
         return proc
 
+    def _bfs_spin_at_waypoint(self, waypoint_idx, total_waypoints):
+        """Spin 360° at current position scanning for markers. Returns True if all found."""
+        log = self.get_logger()
+        log.info(f'BFS waypoint {waypoint_idx + 1}/{total_waypoints}: spinning 360°...')
+        twist = Twist()
+        twist.angular.z = BFS_SPIN_SPEED
+        deadline = time.monotonic() + BFS_SPIN_DURATION
+
+        while time.monotonic() < deadline:
+            with self._marker_lock:
+                if REQUIRED_MARKERS.issubset(self.detected_markers.keys()):
+                    self.cmd_vel_pub.publish(Twist())
+                    return True
+            self.cmd_vel_pub.publish(twist)
+            time.sleep(0.05)
+
+        self.cmd_vel_pub.publish(Twist())
+        return False
+
     # =========================================================================
     # BFS COVERAGE SWEEP
     # =========================================================================
+    def _set_inflation_radius(self, radius):
+        """Dynamically set the inflation radius on both global costmap layers."""
+        log = self.get_logger()
+        for node_name in [
+            '/global_costmap/global_costmap',
+            '/local_costmap/local_costmap',
+        ]:
+            try:
+                subprocess.run(
+                    ['ros2', 'param', 'set', node_name,
+                     'inflation_layer.inflation_radius', str(radius)],
+                    timeout=5, capture_output=True,
+                )
+                log.info(f'Set inflation_radius={radius} on {node_name}')
+            except Exception as e:
+                log.warn(f'Failed to set inflation on {node_name}: {e}')
+
     def run_coverage_sweep(self, navigator):
         log = self.get_logger()
         while self.map_data is None or self.map_origin is None:
             time.sleep(0.5)
+
+        # Reduce inflation for tighter sweep
+        self._set_inflation_radius(BFS_SWEEP_INFLATION)
 
         try:
             tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
             robot_x, robot_y = tf.transform.translation.x, tf.transform.translation.y
         except Exception as e:
             log.error(f'Cannot get robot pose for sweep: {e}')
+            self._set_inflation_radius(0.25)
             return
 
-        waypoints = self._bfs_all_waypoints(robot_x, robot_y)
-        log.info(f'BFS sweep planned: {len(waypoints)} waypoints.')
+        waypoints = self._bfs_all_waypoints(robot_x, robot_y, spacing=BFS_SWEEP_GOAL_SPACING)
+        log.info(f'BFS sweep planned: {len(waypoints)} waypoints (spacing={BFS_SWEEP_GOAL_SPACING}m, inflation={BFS_SWEEP_INFLATION}m).')
 
-        partial_deadline = None  # set when at least one marker is found
+        try:
+            partial_deadline = None  # set when at least one marker is found
 
-        for i, (row, col) in enumerate(waypoints):
-            with self._marker_lock:
-                have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
-                have_any = len(self.detected_markers) > 0
-            if have_all:
-                log.info('All markers found! Ending sweep early.')
-                return
-            if have_any and partial_deadline is None:
-                partial_deadline = time.monotonic() + SWEEP_PARTIAL_TIMEOUT
-                log.info(f'At least one marker found — sweep will timeout in {SWEEP_PARTIAL_TIMEOUT}s if the rest are not found.')
-            if partial_deadline is not None and time.monotonic() > partial_deadline:
-                log.warn(f'Sweep timeout — could not find all markers within {SWEEP_PARTIAL_TIMEOUT}s of first detection. Proceeding with what we have.')
-                return
-
-            gx = self.map_origin.position.x + (col + 0.5) * self.map_resolution
-            gy = self.map_origin.position.y + (row + 0.5) * self.map_resolution
-
-            try:
-                tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
-                rx, ry = tf.transform.translation.x, tf.transform.translation.y
-            except Exception:
-                rx, ry = gx, gy
-
-            goal_yaw = math.atan2(gy - ry, gx - rx)
-
-            goal = PoseStamped()
-            goal.header.frame_id = 'map'
-            goal.header.stamp = navigator.get_clock().now().to_msg()
-            goal.pose.position.x, goal.pose.position.y = gx, gy
-            q = quaternion_from_euler(0, 0, goal_yaw)
-            goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
-
-            navigator.goToPose(goal)
-            while not navigator.isTaskComplete():
+            for i, (row, col) in enumerate(waypoints):
                 with self._marker_lock:
                     have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
+                    have_any = len(self.detected_markers) > 0
                 if have_all:
-                    navigator.cancelTask()
-                    log.info('All markers found mid-transit! Ending sweep early.')
+                    log.info('All markers found! Ending sweep early.')
+                    return
+                if have_any and partial_deadline is None:
+                    partial_deadline = time.monotonic() + SWEEP_PARTIAL_TIMEOUT
+                    log.info(f'At least one marker found — sweep will timeout in {SWEEP_PARTIAL_TIMEOUT}s if the rest are not found.')
+                if partial_deadline is not None and time.monotonic() > partial_deadline:
+                    log.warn(f'Sweep timeout — could not find all markers within {SWEEP_PARTIAL_TIMEOUT}s of first detection. Proceeding with what we have.')
+                    return
+
+                gx = self.map_origin.position.x + (col + 0.5) * self.map_resolution
+                gy = self.map_origin.position.y + (row + 0.5) * self.map_resolution
+
+                try:
+                    tf = self.tf_buffer.lookup_transform('map', 'base_link', rclpy.time.Time())
+                    rx, ry = tf.transform.translation.x, tf.transform.translation.y
+                except Exception:
+                    rx, ry = gx, gy
+
+                goal_yaw = math.atan2(gy - ry, gx - rx)
+
+                goal = PoseStamped()
+                goal.header.frame_id = 'map'
+                goal.header.stamp = navigator.get_clock().now().to_msg()
+                goal.pose.position.x, goal.pose.position.y = gx, gy
+                q = quaternion_from_euler(0, 0, goal_yaw)
+                goal.pose.orientation.x, goal.pose.orientation.y, goal.pose.orientation.z, goal.pose.orientation.w = q
+
+                navigator.goToPose(goal)
+                while not navigator.isTaskComplete():
+                    with self._marker_lock:
+                        have_all = REQUIRED_MARKERS.issubset(self.detected_markers.keys())
+                    if have_all:
+                        navigator.cancelTask()
+                        log.info('All markers found mid-transit! Ending sweep early.')
+                        return
+                    if partial_deadline is not None and time.monotonic() > partial_deadline:
+                        navigator.cancelTask()
+                        log.warn(f'Sweep timeout mid-transit — proceeding with found markers.')
+                        return
+                    time.sleep(0.1)
+
+                # Spin 360° at waypoint to scan for markers
+                if self._bfs_spin_at_waypoint(i, len(waypoints)):
+                    log.info('All markers found during spin! Ending sweep early.')
                     return
                 if partial_deadline is not None and time.monotonic() > partial_deadline:
-                    navigator.cancelTask()
-                    log.warn(f'Sweep timeout mid-transit — proceeding with found markers.')
+                    log.warn(f'Sweep timeout during spin — proceeding with found markers.')
                     return
-                time.sleep(0.1)
 
-        log.info('BFS sweep complete — all waypoints visited.')
+            log.info('BFS sweep complete — all waypoints visited.')
+        finally:
+            log.info('Restoring default inflation radius...')
+            self._set_inflation_radius(0.25)
 
-    def _bfs_all_waypoints(self, robot_x, robot_y):
+    def _bfs_all_waypoints(self, robot_x, robot_y, spacing=None):
         map_h, map_w = self.map_data.shape
-        stride = max(1, int(GOAL_SPACING / self.map_resolution))
+        stride = max(1, int((spacing or GOAL_SPACING) / self.map_resolution))
         orig_x = self.map_origin.position.x
         orig_y = self.map_origin.position.y
 
