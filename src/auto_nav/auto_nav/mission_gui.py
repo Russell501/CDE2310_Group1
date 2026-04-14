@@ -159,7 +159,14 @@ class MissionMonitorNode(Node):
         phase = msg.data
         s.phase = phase
 
-        if phase == 'EXPLORE':
+        if phase == 'INITIAL_BFS':
+            s.bfs     = 'running'
+            if s.mapping == 'idle':
+                s.mapping = 'running'
+
+        elif phase == 'EXPLORE':
+            if s.bfs == 'running':
+                s.bfs = 'done'
             if s.explore_lite == 'idle':
                 s.explore_lite = 'running'
             if s.mapping == 'idle':
@@ -407,12 +414,13 @@ class MissionGUI:
 
         # Footer
         phase_labels = {
-            'EXPLORE':  'Phase 1 — Exploration underway',
-            'REMAP':    'Phase 1 — Re-mapping (explore_lite restarted)',
-            'SWEEP':    'Phase 2 — BFS coverage sweep',
-            'DOCK_A':   'Phase 3 — Docking at Station A (stationary)',
-            'DOCK_B':   'Phase 4 — Docking at Station B (moving receptacle)',
-            'COMPLETE': 'All missions complete!',
+            'INITIAL_BFS': 'Phase 1a — Initial BFS (map seeding)',
+            'EXPLORE':     'Phase 1b — explore_lite underway',
+            'REMAP':       'Phase 1b — Re-mapping (explore_lite restarted)',
+            'SWEEP':       'Phase 2 — BFS coverage sweep',
+            'DOCK_A':      'Phase 3 — Docking at Station A (stationary)',
+            'DOCK_B':      'Phase 4 — Docking at Station B (moving receptacle)',
+            'COMPLETE':    'All missions complete!',
         }
         if s.phase in phase_labels:
             self._footer.config(
