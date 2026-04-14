@@ -427,6 +427,7 @@ class UltimateMissionController(Node):
             navigator.destroy_node()
             return
 
+        done_a = False
         if have_a:
             self._publish_phase('DOCK_A')
             if not self.execute_docking(navigator, STATION_A_MARKER_ID, "Station A"):
@@ -434,17 +435,34 @@ class UltimateMissionController(Node):
             log.info('>>> STATION A: FIRING SEQUENCE <<<')
             self._fire_sequence(STATION_A_FIRE_DELAYS, "Station A")
             self.execute_undock()
+            done_a = True
         else:
-            log.error('Skipping Station A — marker never detected.')
+            log.warn('Station A not yet detected — will retry after Station B.')
 
         # --- PHASE 4: DOCK STATION B ---
         if have_b:
             self._publish_phase('DOCK_B')
-            if self.execute_docking_b(navigator):
-                log.info('>>> STATION B: FIRING SEQUENCE <<<')
-                self._fire_station_b_sequence()
+            if not self.execute_docking_b(navigator):
+                log.warn('Station B docking failed — proceeding with fire sequence anyway.')
+            log.info('>>> STATION B: FIRING SEQUENCE <<<')
+            self._fire_station_b_sequence()
         else:
             log.error('Skipping Station B — marker never detected.')
+
+        # --- PHASE 5: RETRY STATION A (if discovered late) ---
+        if not done_a:
+            with self._marker_lock:
+                have_a = STATION_A_MARKER_ID in self.detected_markers
+            if have_a:
+                log.info('Station A detected late — docking now.')
+                self._publish_phase('DOCK_A')
+                if not self.execute_docking(navigator, STATION_A_MARKER_ID, "Station A"):
+                    log.warn('Station A docking failed — proceeding with fire sequence anyway.')
+                log.info('>>> STATION A: FIRING SEQUENCE <<<')
+                self._fire_sequence(STATION_A_FIRE_DELAYS, "Station A")
+                self.execute_undock()
+            else:
+                log.error('Station A marker never detected — skipping.')
 
         self._publish_phase('COMPLETE')
         log.info('='*50 + '\nALL MISSIONS COMPLETE!\n' + '='*50)
