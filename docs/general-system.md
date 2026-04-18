@@ -61,7 +61,7 @@ Station B follows the same coarse-to-fine docking pipeline, but with tighter ali
 
 ### 5. Mission Complete
 
-After both stations have been serviced, the mission controller publishes a completion signal and logs the final state. ROSBAG recording captures all relevant topics throughout for post-mission analysis.
+After both stations have been serviced, the mission controller publishes a completion signal and logs the final state.
 
 ---
 
