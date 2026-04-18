@@ -71,10 +71,11 @@ This document provides detailed instructions for printing, assembling, and integ
 - **Ensure all wires are secured down and none are exposed**
 
 ### Servo Installation
-- **Servo Orientation**: Install the servo into the housing with the correct rotation direction to ensure smooth and consistent feeding of balls into the flywheel system. Incorrect orientation may result in jamming or inconsistent feeding.  
+- **Servo Placement**: Install the servo into the housing with the correct orientation and ensure that it won't jammed on to the flywheel or wires
+
 
 ### Flywheel Alignment
-- **Motor and Flywheel Fit**: Ensure flywheels are firmly press-fitted onto the motor shafts and aligned properly within the housing. Misalignment may cause vibration or reduced launching performance.  
+- **Motor and Flywheel Fit**: Ensure flywheels are firmly press-fitted onto the motor shafts and aligned properly within the housing. Misalignment may cause vibration or reduced launching performance
 ---
 
 ## System Specifications
@@ -120,9 +121,9 @@ The flywheel system must therefore impart an approximate exit velocity between *
 ---
 
 ## Mechanical and Assembly Recommendations
-- Ensure all locking pins and glued components have fully set before testing the launch mechanism.
+- Ensure all components are secured and glue components that is loose
 - Double-check servo alignments and wiring connections to ensure smooth operation.
-- Conduct initial launch tests at low servo power settings to verify mechanical stability and integrity.
+- Conduct initial launch tests to verify mechanical stability and integrity.
 
 ---
 ## Design Reasoning
