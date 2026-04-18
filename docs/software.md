@@ -17,6 +17,13 @@ title: Software Subsystem
 
 # Software Subsystem
 
+## System-Level Navigation Logic
+
+![Navigation Logic Flowchart](assets/images/software_system/nav_logic.png)
+*System-level navigation logic showing the full mission FSM from initialisation through exploration, docking, and delivery.*
+
+---
+
 ## Exploration Strategy
 
 Our robot uses a **multi-layered exploration pipeline** to ensure all delivery station markers are found, even in challenging maze configurations where a single strategy might miss dead-end corridors or occluded markers.
