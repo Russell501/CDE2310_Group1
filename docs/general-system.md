@@ -28,7 +28,7 @@ The system is decomposed into four interdependent subsystems, each responsible f
 
 **Navigation Subsystem** - Responsible for autonomous exploration, mapping, localisation, and goal-directed path planning. The robot builds a real-time occupancy grid of the unknown maze using LiDAR-based SLAM (Cartographer), explores unmapped regions via frontier-based navigation (explore_lite), and executes obstacle-free paths to delivery stations using the Nav2 stack with DWB local planner.
 
-**Sensor Subsystem** - Provides environmental perception through two complementary sensors. The LDS-02 LiDAR delivers 360° range data for SLAM map construction and obstacle avoidance. The RPi Camera V2 handles ArUco marker detection and 6D pose estimation, enabling the robot to identify delivery stations and determine precise docking approach vectors.
+**Sensor Subsystem** - Provides environmental perception through two complementary sensors. The LDS-02 LiDAR delivers 360° range data for SLAM map construction and obstacle avoidance. The RPi Camera V2, driven by a standalone detection script (`aruco_live.py`) running directly on the RPi, handles ArUco marker detection and 6D pose estimation, publishing marker poses to ROS 2 for station localisation and docking alignment.
 
 **Launcher Subsystem** - Handles payload storage, feeding, and delivery. Nine ping pong balls are stored in a gravity-fed curved tube that does not obstruct the LiDAR field of view. A servo-actuated gate controls ball release into a dual counter-rotating flywheel mechanism, which launches balls with consistent velocity and trajectory. An IR break-beam sensor at the barrel exit confirms each successful launch.
 
@@ -49,7 +49,7 @@ The robot is placed at the designated start zone and powered on. A single ROS 2 
 
 ### 2. Autonomous Exploration
 
-The robot explores the unknown maze using a multi-layered approach. An initial rapid sweep seeds the map, followed by frontier-based exploration that systematically targets boundaries between known and unknown space. If the primary exploration completes without finding all station markers, additional fallback strategies (frontier cleanup and coverage sweeping) are engaged automatically. ArUco detection runs concurrently throughout - any station marker sighted during exploration is immediately localised in the map frame and stored for later docking.
+The robot explores the unknown maze using a multi-layered approach. An initial rapid sweep seeds the map, followed by frontier-based exploration that systematically targets boundaries between known and unknown space. If the primary exploration completes without finding all station markers, additional fallback strategies (frontier cleanup and coverage sweeping) are engaged automatically. A standalone ArUco detection script runs on the RPi throughout - any station marker sighted during exploration is immediately published to ROS 2, localised in the map frame by the mission controller, and stored for later docking.
 
 ### 3. Station A - Static Delivery
 
