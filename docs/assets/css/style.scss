@@ -1,0 +1,140 @@
+---
+---
+
+@import "jekyll-theme-minimal";
+
+/* ===== LAYOUT FIX ===== */
+div.wrapper {
+  width: auto !important;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* Sidebar: fixed, narrow */
+header {
+  width: 180px !important;
+  position: fixed !important;
+  left: auto;
+  float: left;
+}
+
+/* Content: pushed right past sidebar */
+section {
+  float: none !important;
+  width: auto !important;
+  max-width: 860px;
+  margin-left: 210px !important;
+}
+
+/* Footer: also pushed right */
+footer {
+  position: fixed !important;
+  width: 180px !important;
+}
+
+/* Responsive: unfix everything on small screens */
+@media print, screen and (max-width: 720px) {
+  header {
+    position: relative !important;
+    width: auto !important;
+    float: none !important;
+  }
+  section {
+    margin-left: 0 !important;
+  }
+  footer {
+    position: relative !important;
+    width: auto !important;
+    float: none !important;
+  }
+}
+
+/* ===== DARK MODE ===== */
+@media (prefers-color-scheme: dark) {
+
+  body {
+    background-color: #0d1117;
+    color: #c9d1d9;
+  }
+
+  header {
+    h1 { color: #58a6ff; }
+    p { color: #8b949e; }
+    a { color: #58a6ff; }
+  }
+
+  section {
+    h1, h2, h3, h4, h5, h6 {
+      color: #e6edf3;
+      border-bottom-color: #21262d;
+    }
+    a { color: #58a6ff; }
+    a:hover { color: #79c0ff; }
+    strong { color: #e6edf3; }
+  }
+
+  hr { border-color: #21262d; }
+
+  code {
+    background-color: #161b22 !important;
+    color: #c9d1d9 !important;
+    border: 1px solid #30363d !important;
+    box-shadow: none !important;
+  }
+
+  pre {
+    background-color: #161b22 !important;
+    border: 1px solid #30363d !important;
+    color: #c9d1d9 !important;
+    box-shadow: none !important;
+
+    code {
+      background-color: transparent !important;
+      border: none !important;
+      color: inherit !important;
+    }
+  }
+
+  /* Syntax highlighting (Rouge) */
+  .highlight {
+    background-color: #161b22 !important;
+
+    .c, .c1, .cm { color: #8b949e !important; }   /* comments */
+    .k, .kd, .kn { color: #ff7b72 !important; }   /* keywords */
+    .s, .s1, .s2 { color: #a5d6ff !important; }   /* strings */
+    .nf, .nb { color: #d2a8ff !important; }        /* functions */
+    .nv, .vi { color: #79c0ff !important; }        /* variables */
+    .mi, .mf { color: #79c0ff !important; }        /* numbers */
+    .o, .p { color: #c9d1d9 !important; }          /* operators, punctuation */
+    .na { color: #79c0ff !important; }             /* attributes */
+    .nt { color: #7ee787 !important; }             /* tags */
+  }
+
+  table {
+    color: #c9d1d9;
+    th {
+      background-color: #161b22;
+      color: #e6edf3;
+      border-color: #30363d;
+    }
+    td { border-color: #21262d; }
+    tr:nth-child(even) { background-color: #161b22; }
+    tr:nth-child(odd) { background-color: #0d1117; }
+  }
+
+  blockquote {
+    border-left-color: #30363d;
+    color: #8b949e;
+  }
+
+  img {
+    border: 1px solid #21262d;
+    border-radius: 6px;
+  }
+
+  footer {
+    color: #484f58;
+    a { color: #58a6ff; }
+  }
+}

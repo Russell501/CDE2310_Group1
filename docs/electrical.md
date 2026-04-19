@@ -1,3 +1,23 @@
+---
+title: Electrical Subsystem
+---
+
+# 🔗 Navigation
+
+- [Home](index.md)
+- [Requirements](requirements.md)
+- [Con-Ops](conops.md)
+- [High Level Design](high-level-design.md)
+- [Interface Control Documents](icd.md)
+- [Software Development](software.md)
+- [Testing](testing.md)
+- [User Manual](user-manual.md)
+- [Bill-Of-Materials](bill-of-materials.md)
+- **Electrical Subsystem** ← _You are here_
+- [Mechanical Subsystem](mechanical.md)
+- [Improvements](improvements.md)
+
+---
 
 # Electrical Subsystem
 
@@ -10,7 +30,7 @@ The electrical subsystem covers all components critical to the mission: power di
 The Raspberry Pi acts as the central processing unit, coordinating all subsystems. It communicates with the OpenCR board via USB for motor control of the DYNAMIXEL servos, which drive the TurtleBot's wheels. The LiDAR sensor connects through a USB-to-UART interface module, providing obstacle detection data over UART. The RPi Camera connects directly to the Raspberry Pi via the CSI interface for visual feedback. The SG90 servo is driven directly by the Raspberry Pi using PWM signals over GPIO, and receives its power (5V) from the Raspberry Pi's 5V rail. The L298 motor driver is controlled via GPIO digital signals from the Raspberry Pi and is responsible for driving the two RF300 Series flywheel DC motors at 5V.
 
 > **System Architecture / Communication Protocols Diagram**
-> ![System Architecture Diagram](./assets/images/comm_protocols.png)
+> ![System Architecture Diagram](assets/images/comm_protocols.png)
 
 
 *Figure 1: System architecture showing communication protocols between all components (USB, UART, CSI, PWM, GPIO).*
@@ -22,7 +42,7 @@ The Raspberry Pi acts as the central processing unit, coordinating all subsystem
 Power is supplied by the TurtleBot3's onboard 11.1V LiPo battery (1800mAh). The OpenCR board receives 11.1V directly from the battery and distributes regulated voltages (5V, 3.3V) to the Raspberry Pi and other logic-level components. The Raspberry Pi is powered by the OpenCR's regulated output. The flywheel DC motors (RF300 Series) are powered at **5V** via the L298 motor driver, sourced from the Raspberry Pi's 5V GPIO rail, **not** from the OpenCR's 11.1V output anymore. The SG90 servo is powered from the Raspberry Pi's 5V rail.
 
 > **Power Lines Architecture Diagram**
-> ![Power Distribution Diagram](./assets/images/system_dia.png)
+> ![Power Distribution Diagram](assets/images/system_dia.png)
 
 *Figure 2: Power distribution diagram showing voltage levels (11.1V, 5V, 3.3V) to each component.*
 
@@ -37,7 +57,7 @@ The full circuit schematic shows all component connections including the OpenCR,
 - A common GND is maintained across all components to ensure stable PWM and signal referencing.
 
 > **Image Placeholder — Electrical Schematic**
-> ![Electrical Schematic](./assets/images/elec_schem.png)
+> ![Electrical Schematic](assets/images/elec_schem.png)
 
 
 *Figure 3: Full electrical schematic showing all component connections.*
@@ -83,6 +103,18 @@ The full circuit schematic shows all component connections including the OpenCR,
 ### RPi Camera
 - Connected to Raspberry Pi via **CSI** (Camera Serial Interface).
 - Powered at **3.3V** from the Raspberry Pi.
+
+### GPIO Pin Assignments (Launcher Hardware)
+
+| Signal | GPIO Pin | Direction | Description |
+|---|---|---|---|
+| Motor A Forward | GPIO 23 | Output | L298N IN1 — Motor A direction |
+| Motor A Backward | GPIO 24 | Output | L298N IN2 — Motor A direction |
+| Motor A Enable | GPIO 13 | Output (PWM) | L298N ENA — Motor A speed |
+| Motor B Forward | GPIO 22 | Output | L298N IN3 — Motor B direction |
+| Motor B Backward | GPIO 27 | Output | L298N IN4 — Motor B direction |
+| Motor B Enable | GPIO 12 | Output (PWM) | L298N ENB — Motor B speed |
+| SG90 Servo | GPIO (PWM pin) | Output (PWM) | Servo gate control |
 
 ---
 

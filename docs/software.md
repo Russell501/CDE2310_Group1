@@ -1,326 +1,77 @@
 ---
-title: Software Subsystem
+title: Software/Firmware Development Documentation
 ---
 
 # 🔗 Navigation
 
 - [Home](index.md)
-- [The Challenge](challenge.md)
-- [General System](general-system.md)
-- [Software Subsystem](software.md)
-- [Mechanical Subsystem](mechanical.md)
+- [Requirements](requirements.md)
+- [Con-Ops](conops.md)
+- [High Level Design](high-level-design.md)
+- [Interface Control Documents](icd.md)
+- **Software Development** ← _You are here_
+- [Testing](testing.md)
+- [User Manual](user-manual.md)
+- [Bill-Of-Materials](bill-of-materials.md)
 - [Electrical Subsystem](electrical.md)
-- [End User Documentation & BOM](user_docs.md)
-- [Areas for Improvement](improvements.md)
+- [Mechanical Subsystem](mechanical.md)
+- [Improvements](improvements.md)
+
+---
+# Software/Firmware Development Documentation
 
 ---
 
-# Software Subsystem
+## 1. Software Architecture Overview
 
-## System-Level Navigation Logic
+The software system is built on ROS 2 Humble running on the Raspberry Pi 4B. It consists of a central mission controller FSM, a standalone ArUco detection pipeline, a hardware launcher controller, and the standard TurtleBot3/Nav2 stack components.
 
-![Navigation Logic Flowchart](assets/images/software_system/nav_logic.png)
+### 1.1 ROS 2 Packages
+
+| Package | Description |
+|---|---|
+| `auto_nav` | Primary package containing the mission controller, exploration FSM, and launch files |
+| `py_pubsub` | Utility package for basic ROS 2 publisher/subscriber testing |
+| `testbed_pkg` | Testbed package for early assignment exercises |
+| `turtlebot3_simulations` | Standard TurtleBot3 Gazebo simulation environment |
+
+### 1.2 Node and Script Registry
+
+| Executable / Script | Entry Point | Run Location | Purpose |
+|---|---|---|---|
+| `mission_controller` | `auto_nav.exploration_fsm:main` | Laptop (via launch file) | Central mission FSM — orchestrates exploration, docking, and delivery |
+| `mission_gui` | `auto_nav.mission_gui:main` | Laptop (manual) | Tkinter-based GUI for real-time mission monitoring |
+| `aruco_live.py` | Standalone script | RPi (via SSH) | Camera capture, ArUco detection, pose estimation, ROS 2 publishing |
+| `ball_launcher.py` | Standalone script | RPi (via SSH) | ROS 2 services for flywheel and servo hardware control |
+| `aruco_dock.py` | Standalone script | Laptop (manual) | Standalone docking test — Nav2 + cmd_vel approach to a single marker |
+| `station_b_launcher.py` | Standalone script | Laptop (manual) | Standalone Station B fire sequence test (assumes already docked) |
+| `system_test.py` | Standalone script | Laptop (manual) | Pre-flight integration test with Tkinter GUI |
+| `bringup_all.launch.py` | Launch file | Laptop | Unified launch: Cartographer → Nav2 → Mission FSM (event-driven) |
+
+---
+
+## 2. Mission Controller (`exploration_fsm.py`)
+
+![Navigation Logic Flowchart](assets/images/general_system/nav_logic.png)
 *System-level navigation logic showing the full mission FSM from initialisation through exploration, docking, and delivery.*
 
----
 
-## Exploration Strategy
+### 2.1 Finite State Machine
 
-Our robot uses a **multi-layered exploration pipeline** to ensure all delivery station markers are found, even in challenging maze configurations where a single strategy might miss dead-end corridors or occluded markers.
+The `UltimateMissionController` is a single ROS 2 node that acts as the orchestrator for the entire mission. It manages high-level phase transitions and coordinates between all subsystems. The FSM follows this sequence:
 
-The exploration proceeds through up to four stages, each more exhaustive than the last. The system exits early as soon as all required markers (Station A and Station B) have been detected:
+1. **Initialisation** — Wait for SLAM map and valid TF transforms.
+2. **Phase 1a** — Initial BFS coverage sweep (15 s budget).
+3. **Phase 1b** — Frontier exploration via explore_lite (up to 600 s).
+4. **Phase 1c** — Frontier cleanup BFS (short-hop, time-decaying blacklist).
+5. **Phase 2** — Full coverage sweep (last resort, if markers still missing).
+6. **Station A Docking & Delivery** — Coarse-to-fine approach + timed fire sequence.
+7. **Station B Docking & Delivery** — Coarse-to-fine approach + trigger-based fire sequence.
+8. **Mission Complete** — Publish completion signal and log final state.
 
-| Stage | Strategy | Purpose |
-|---|---|---|
-| Phase 1a | Timed BFS Coverage Sweep | Rapid initial map seeding across known free space (15s budget) |
-| Phase 1b | explore_lite (frontier-based) | Systematic frontier exploration with up to 600s timeout |
-| Phase 1c | Frontier Cleanup (short-hop BFS) | Targeted cleanup of remaining frontiers that explore_lite missed |
-| Phase 2 | Full Coverage Sweep | Exhaustive BFS visit of every reachable free cell as a last resort |
+The controller exits early from exploration as soon as all required markers (Station A and B) are detected.
 
-This layered approach ensures the robot does not waste time on exhaustive sweeps when markers are found early, but still has fallback strategies for difficult maze layouts.
-
----
-
-### Phase 1a - Initial BFS Sweep
-
-Before launching explore_lite, the controller runs a quick BFS coverage sweep over the current occupancy grid. Starting from the robot's position, it generates waypoints at regular grid spacing across all known free cells and navigates to them sequentially. This seeds the map rapidly and may detect markers before the heavier explore_lite process is even started.
-
-The sweep terminates when either:
-- The time budget (15 seconds) expires
-- All required markers are found mid-transit
-
----
-
-### Phase 1b - Frontier Exploration (explore_lite)
-
-The primary exploration phase uses the `explore_lite` ROS 2 package, launched as a subprocess. explore_lite identifies frontiers (boundaries between mapped free space and unknown territory) in the occupancy grid and publishes navigation goals to the Nav2 action server.
-
-The controller subscribes to `explore/status` and waits for the `EXPLORATION_COMPLETE` signal. A configurable timeout (600s) prevents indefinite waiting if explore_lite gets stuck.
-
-Throughout this phase, the ArUco detection script (`aruco_live.py`) runs directly on the RPi as a standalone process, publishing detected markers to ROS 2. Any marker sighting is immediately transformed to map-frame coordinates and persisted.
-
----
-
-### Phase 1c - Frontier Cleanup (Short-Hop BFS)
-
-If explore_lite completes but required markers are still missing, an in-process frontier cleanup runs. This addresses a common failure mode where explore_lite declares completion while small unexplored pockets remain.
-
-The cleanup algorithm:
-1. BFS from the robot's current position across free cells to find the nearest frontier
-2. Trace the BFS parent chain to get a path through known free space
-3. Navigate along this path in short hops (0.6m increments)
-4. After each hop, the map has updated from new LiDAR scans, so the BFS is recomputed
-
-Key robustness features:
-- **Time-decaying blacklist** (TTL = 90s, radius = 0.30m) prevents oscillation between unreachable frontiers
-- **Costmap clearance checking** (0.22m) ensures hop targets are safely navigable
-- **Recovery spins** (360°) are triggered after 3 consecutive navigation failures
-- **Frontier clustering** groups connected frontier cells and snaps goals to reachable centroids
-
----
-
-### Phase 2 - Coverage Sweep (Last Resort)
-
-If markers remain undetected after all frontier strategies, a full BFS coverage sweep visits every reachable free cell in the occupancy grid. Once at least one marker is found, a partial timeout (120s) begins to avoid indefinite sweeping for the remaining marker.
-
----
-
-## SLAM and Mapping
-
-### Cartographer SLAM
-
-The robot uses **Google Cartographer** for real-time SLAM, fusing data from three sources:
-
-| Source | Purpose |
-|---|---|
-| LDS-02 LiDAR | 360° range measurements for scan matching and map construction |
-| Wheel Encoders | Odometry estimates for inter-scan motion prediction |
-| IMU | Inertial data for orientation refinement and drift correction |
-
-Cartographer generates an occupancy grid map at 0.05 m/cell resolution, classifying each cell as free (0), occupied (100), or unknown (-1). The map is published on the `/map` topic and consumed by both Nav2 and the mission controller.
-
-### Why Cartographer Over Alternatives
-
-| Algorithm | ROS 2 Support | Loop Closure | CPU Load | Map Quality |
-|---|---|---|---|---|
-| Cartographer (selected) | Via port | Good | High | Very High |
-| SLAM Toolbox | Native | Excellent | Medium | High |
-| Gmapping | ROS 1 only | None | Low | Medium |
-
-Cartographer was selected for its superior map quality, which is critical for reliable docking alignment. The higher CPU load is acceptable given the Raspberry Pi 4B's capacity for our workload.
-
----
-
-## Path Planning and Control
-
-### Nav2 Stack Configuration
-
-Navigation uses the **Nav2** stack with the following component choices:
-
-| Component | Selection | Role |
-|---|---|---|
-| Global Planner | NavFn (A*) | Computes shortest collision-free path through the global costmap |
-| Local Controller | DWB (Dynamic Window Approach) | Generates real-time velocity commands for obstacle avoidance |
-| Costmap | Global + Local | Inflated obstacle layers for safe path planning |
-| Recovery Behaviors | Spin, BackUp, Wait | Automated recovery when the robot gets stuck |
-
-### Why DWB Over Alternatives
-
-DWB was selected over MPPI and Pure Pursuit for its proven reliability in indoor corridor environments and lower computational overhead on the Raspberry Pi 4B. While MPPI offers smoother trajectories in complex open spaces, DWB's simpler sampling approach provides sufficient performance in the structured maze corridors of this mission, with response latency consistently under 100ms.
-
-### Frontier-Based Goal Selection
-
-During exploration, frontier goals are generated by explore_lite and published directly to the Nav2 action server. The mission controller monitors goal outcomes:
-- **Successful goals** allow the robot to continue exploring
-- **Failed goals** trigger frontier blacklisting to prevent re-attempts at unreachable locations
-
-By separating goal discovery (explore_lite / BFS) from path execution (Nav2 planner + controller), the system maintains a clean division of concerns and allows each component to be tuned independently.
-
----
-
-## ArUco Detection Pipeline
-
-### Marker Detection
-
-A standalone Python script (`aruco_live.py`) runs directly on the Raspberry Pi, capturing frames from the RPi Camera V2 and publishing detected marker poses to ROS 2. Unlike the other ROS 2 nodes which are launched via the launch file, this script runs as an independent process and optionally initialises its own `rclpy` node to publish on `/aruco/markers`. The pipeline:
-
-1. **Capture** - Frames at 640x480 resolution, 30 FPS
-2. **Preprocessing** - Grayscale conversion for improved bit-pattern recognition under varying warehouse lighting
-3. **Detection** - `cv2.aruco` with `DICT_6X6_250` dictionary identifies marker boundaries via `ArucoDetector`
-4. **Pose Estimation** - `cv2.solvePnP` with the `IPPE_SQUARE` solver extracts the rotation vector (rvec) and translation vector (tvec) from the marker's four corner points and the camera's intrinsic calibration matrix (loaded from a `.npz` calibration file)
-5. **Quaternion Conversion** - The rvec is converted to a rotation matrix via `cv2.Rodrigues`, then to a unit quaternion (x, y, z, w) for ROS 2 compatibility
-6. **Publishing** - Detected markers are published on `/aruco/markers` as a `visualization_msgs/MarkerArray`, with each entry containing the marker ID, camera-frame position, and orientation quaternion
-
-### Why DICT_6X6_250
-
-The 6x6 dictionary provides a larger set of unique marker IDs (250) while maintaining robust detection at the distances used in this mission. The default marker size is 5cm, and detection is reliable within the camera's operational range at 640x480 resolution. The dictionary choice also allows us to use distinct IDs for Station A (ID 0), Station B (ID 1), and the Station B trigger marker (ID 2) without risk of cross-detection.
-
-### Quality Gates
-
-The mission controller applies quality gates before accepting a marker sighting:
-- Lateral offset |cam_x| must be < 0.15m (rejects oblique sightings)
-- Depth cam_z must be between 0.15m and 2.0m (rejects too-close or too-far readings)
-- Valid TF transform must be available for coordinate conversion
-
----
-
-## Camera-to-Map Coordinate Transform
-
-When a marker passes quality gates, the controller converts the camera-frame observation to map-frame coordinates:
-
-1. Look up the current `map -> base_link` TF transform to get the robot's world pose and yaw
-2. Apply the camera X offset (4cm lateral) and project the camera-frame point (cam_x, cam_z) into the map frame using the robot's position and heading
-3. Extract the marker's **outward normal direction** from its orientation quaternion - this gives the heading the robot should face when docking
-4. Store the result as `(map_x, map_y, normal_yaw)` in the detected markers dictionary
-
-The normal yaw is critical for docking - it defines the direction the robot must approach from to face the station head-on.
-
----
-
-## YAML State Persistence
-
-All detected marker poses are serialised to `/tmp/aruco_dock_poses.yaml` after every sighting update. On startup, the controller loads any existing poses from this file.
-
-This serves two purposes:
-- **Cross-attempt persistence** - If a mission attempt fails partway through, the robot can skip exploration entirely on re-attempt since it already knows where the stations are
-- **Pose refinement** - Each new sighting overwrites the stored pose, so the most recent (and typically most accurate) observation is always used
-
-A `clear_cache` parameter (default: True) controls whether the pose file is cleared on startup. This should be True for fresh SLAM runs since the map frame changes between runs.
-
----
-
-## Docking Logic
-
-### Coarse-to-Fine Approach
-
-Both stations use a three-stage docking pipeline that progressively transfers control from Nav2 to direct visual servoing:
-
-**Stage 1 - Coarse Nav2 Approach (YAML Pose)**
-The robot navigates to a standoff point 0.6m from the stored marker position along the marker's normal direction. This uses Nav2's global planner for collision-free routing through the maze.
-
-**Stage 2 - Refined Nav2 Runway (Live Marker)**
-Upon arrival, the controller waits for a fresh live camera sighting of the marker. If not immediately visible, a 360° spin search is performed. The live pose corrects for any SLAM drift accumulated since the original sighting. A new Nav2 goal is set at 0.35m from the live marker position.
-
-**Stage 3 - Visual Servo Approach (cmd_vel)**
-The final approach uses direct `cmd_vel` velocity commands with proportional control, bypassing Nav2 entirely. This is split into three sub-phases:
-
-| Sub-phase | Behaviour | Exit Condition |
-|---|---|---|
-| Align | Rotate in place, angular velocity proportional to cam_x error | \|cam_x\| < alignment tolerance |
-| Drive | Forward velocity proportional to distance error, angular correction on lateral error | cam_z drops below blind threshold (0.20m) or target reached |
-| Dead-reckon | Fixed forward velocity, no camera feedback | Remaining distance covered at half speed |
-
-The dead-reckoning phase handles the camera's blind zone - below ~0.20m, the marker becomes too close to detect reliably, so the robot drives the remaining gap based on the last known distance.
-
-### Control Parameters
-
-| Parameter | Value | Description |
-|---|---|---|
-| `K_LINEAR` | 0.3 m/s per m | Proportional gain for forward velocity |
-| `K_ANGULAR` | 1.5 rad/s per m | Proportional gain for angular correction |
-| `MAX_LINEAR` | 0.08 m/s | Maximum forward speed during approach |
-| `MAX_ANGULAR` | 0.50 rad/s | Maximum angular speed during alignment |
-| `ALIGN_TOL_A` | 0.03 m | Lateral tolerance for Station A |
-| `ALIGN_TOL_B` | 0.01 m | Lateral tolerance for Station B (tighter due to moving target) |
-| `TARGET_DISTANCE` | 0.10 m | Final dock distance from marker |
-| `BLIND_THRESHOLD` | 0.20 m | cam_z below which camera detection is unreliable |
-
-### Retry Logic
-
-Each docking attempt allows up to 3 retries (`MAX_DOCK_RETRIES`). Between attempts, the robot returns to the approach area and re-acquires the live marker, which often resolves transient alignment failures caused by lighting changes or brief marker occlusion.
-
----
-
-## Station A - Timed Fire Sequence
-
-After successful docking at Station A, the robot executes a timed firing sequence:
-
-1. **Flywheel spin-up** via `/start_flywheel` service call
-2. **Ball 1** - Wait 6.0s, then fire via `/fire_ball` service call
-3. **Ball 2** - Wait 9.0s, then fire
-4. **Ball 3** - Wait 1.0s, then fire
-5. **Flywheel stop** via `/stop_flywheel` service call
-6. **Undock** - Reverse 0.30m at 0.06 m/s to clear the station
-
-The delays [6.0, 9.0, 1.0] are the team-specific timing pattern assigned in Week 7. The flywheel runs continuously across all three shots to maintain consistent RPM.
-
----
-
-## Station B - Trigger-Based Fire Sequence
-
-Station B uses a fundamentally different firing strategy since the receptacle is oscillating:
-
-1. **Dock** using the same coarse-to-fine pipeline (with tighter 1cm lateral tolerance)
-2. **Flywheel spin-up** via service call (stays running throughout)
-3. **Wait for trigger** - A secondary ArUco marker (ID 2) is mounted on the moving receptacle. The controller's `marker_cb` sets a `threading.Event` when this trigger marker is detected
-4. **Fire** - On trigger detection, immediately fire one ball
-5. **Cooldown** - Wait for the trigger marker to leave the camera frame for at least 5.0s before accepting the next trigger (prevents double-firing on the same pass)
-6. Repeat steps 3-5 for all 3 balls
-7. **Flywheel stop**
-
-If no trigger is detected within 30 seconds for any ball, the sequence aborts to prevent indefinite waiting.
-
----
-
-## Mission Phase Ordering
-
-The controller handles a common edge case where Station A is detected after Station B:
-
-1. If Station A is detected during exploration, dock and deliver at Station A first, then Station B
-2. If only Station B was found initially, dock and deliver at Station B first
-3. After Station B, re-check if Station A has been detected (it may have been spotted during Station B transit)
-4. If yes, execute Station A docking and delivery as a late retry
-
-This ensures both stations are always attempted regardless of discovery order.
-
----
-
-## System Launch Architecture
-
-The entire robot system launches from a single entry point:
-
-### `bringup_all.launch.py`
-
-This top-level launch file starts three components in dependency order:
-
-1. **Cartographer** - Begins SLAM and waits for LiDAR + IMU data
-2. **Nav2** - Starts the navigation stack once Cartographer's map is available
-3. **Mission FSM Node** - Launches the `UltimateMissionController` once Nav2 is ready
-
-Additional nodes/processes:
-- `aruco_live.py` (standalone script, run separately on RPi - captures camera frames and publishes marker detections to `/aruco/markers`)
-- Launcher hardware controller (flywheel + servo services)
-
-This single-file deployment satisfies the bonus scoring criteria and ensures all nodes start in the correct order with proper dependencies.
-
----
-
-## Tuning
-
-### Nav2 Parameter Configuration (`burger.yaml`)
-
-Located at `param/burger.yaml`, this file configures:
-- Global planner (NavFn) - tolerance, costmap usage
-- Local controller (DWB) - velocity limits, trajectory scoring
-- Costmap layers - obstacle marking, inflation radius, resolution
-- Recovery behaviors - spin distance, backup distance, wait duration
-- Robot footprint radius
-
-After modifying parameters, rebuild with:
-```bash
-colcon build --packages-select <package_name>
-```
-
-### Key Nav2 Parameters
-
-| Parameter | Description | Docs |
-|---|---|---|
-| NavFn tolerance | How close the planner needs to get to the goal | [NavFn guide](https://docs.nav2.org/configuration/packages/configuring-navfn.html) |
-| DWB velocity limits | Max/min linear and angular speeds | [DWB guide](https://docs.nav2.org/configuration/packages/configuring-dwb-controller.html) |
-| Inflation radius | Safety buffer around obstacles | [Costmap guide](https://docs.nav2.org/configuration/packages/configuring-costmaps.html) |
-| xy_goal_tolerance | Nav2 goal completion threshold (0.25m) | [BT Navigator](https://docs.nav2.org/configuration/packages/configuring-bt-navigator.html) |
-
-### Mission Controller Parameters
+### 2.2 Key Configuration Parameters
 
 | Parameter | Value | Description |
 |---|---|---|
@@ -332,42 +83,253 @@ colcon build --packages-select <package_name>
 | `STATION_A_FIRE_DELAYS` | [6.0, 9.0, 1.0] | Team-specific timing delays (seconds before each ball) |
 | `STATION_B_BALLS` | 3 | Number of balls to fire at Station B |
 | `TRIGGER_COOLDOWN` | 5.0 s | Wait after firing for trigger marker to clear |
-| `EXPLORATION_TIMEOUT` | 600 s | Maximum time for explore_lite before forcing proceed |
+| `EXPLORATION_TIMEOUT` | 600 s | Maximum time for explore_lite |
 | `INITIAL_BFS_DURATION` | 15 s | Time budget for initial BFS sweep |
 | `FRONTIER_BLACKLIST_TTL` | 90 s | Time-decaying blacklist entry lifetime |
 | `FRONTIER_BLACKLIST_RADIUS` | 0.30 m | Exclusion radius around failed frontier goals |
 | `FRONTIER_HOP_DISTANCE` | 0.60 m | Maximum travel per frontier cleanup hop |
 
+### 2.3 Visual Servo Control Parameters
+
+| Parameter | Value | Description |
+|---|---|---|
+| `K_LINEAR` | 0.3 m/s per m | Proportional gain for forward velocity |
+| `K_ANGULAR` | 1.5 rad/s per m | Proportional gain for angular correction |
+| `MAX_LINEAR` | 0.08 m/s | Maximum forward speed during approach |
+| `MAX_ANGULAR` | 0.50 rad/s | Maximum angular speed during alignment |
+| `ALIGN_TOL_A` | 0.03 m | Lateral tolerance for Station A |
+| `ALIGN_TOL_B` | 0.01 m | Lateral tolerance for Station B (tighter for moving target) |
+| `BLIND_THRESHOLD` | 0.20 m | cam_z below which camera detection is unreliable |
+| `LOST_MARKER_S` | 3.0 s | Tolerated gap before declaring marker lost |
+
 ---
 
-## Visualization and Debugging
+## 3. Exploration Strategy
 
-### RViz Monitoring
+### 3.1 Multi-Layered Pipeline
 
-During operation, the following data is visualized in RViz:
+| Stage | Strategy | Purpose |
+|---|---|---|
+| Phase 1a | Timed BFS Coverage Sweep | Rapid initial map seeding across known free space (15 s budget) |
+| Phase 1b | explore_lite (frontier-based) | Systematic frontier exploration with up to 600 s timeout |
+| Phase 1c | Frontier Cleanup (short-hop BFS) | Targeted cleanup of remaining frontiers that explore_lite missed |
+| Phase 2 | Full Coverage Sweep | Exhaustive BFS visit of every reachable free cell as last resort |
+
+### 3.2 Frontier Cleanup Algorithm (Phase 1c)
+
+1. BFS from the robot's current position across free cells to find the nearest frontier.
+2. Trace the BFS parent chain to get a path through known free space.
+3. Navigate along this path in short hops (0.6 m increments).
+4. After each hop, the map has updated from new LiDAR scans; BFS is recomputed.
+
+Robustness features: time-decaying blacklist (TTL = 90 s, radius = 0.30 m) prevents oscillation; costmap clearance checking (0.22 m) ensures navigable targets; recovery spins (360°) trigger after 3 consecutive failures; frontier clustering groups connected cells and snaps goals to reachable centroids.
+
+---
+
+## 4. SLAM and Navigation
+
+### 4.1 Cartographer SLAM
+
+Google Cartographer fuses three data sources for real-time SLAM:
+
+| Source | Purpose |
+|---|---|
+| LDS-02 LiDAR | 360° range measurements for scan matching and map construction |
+| Wheel Encoders | Odometry estimates for inter-scan motion prediction |
+| IMU | Inertial data for orientation refinement and drift correction |
+
+Map output: occupancy grid at 0.05 m/cell resolution — free (0), occupied (100), unknown (-1) — published on `/map`.
+
+### 4.2 Nav2 Stack Configuration
+
+| Component | Selection | Role |
+|---|---|---|
+| Global Planner | NavFn (A*) | Shortest collision-free path through global costmap |
+| Local Controller | DWB (Dynamic Window Approach) | Real-time velocity commands for obstacle avoidance |
+| Costmap | Global + Local layers | Inflated obstacle layers for safe path planning |
+| Recovery Behaviors | Spin, BackUp, Wait | Automated recovery when the robot gets stuck |
+
+Key `burger.yaml` parameters: `xy_goal_tolerance: 0.25`, `controller_frequency: 10.0 Hz`, `robot_radius: 0.17 m` (local) / `0.1 m` (global), `inflation_radius: 0.25 m`, `cost_scaling_factor: 1.5`.
+
+### 4.3 Algorithm Selection Rationale
+
+**Cartographer over SLAM Toolbox:** Superior map quality critical for docking alignment; higher CPU load acceptable on RPi 4B.
+
+**DWB over MPPI:** Proven reliability in indoor corridors with lower computational overhead; response latency consistently under 100 ms. MPPI offers smoother trajectories in open spaces but adds unnecessary complexity for structured maze corridors.
+
+---
+
+## 5. ArUco Detection Pipeline (`aruco_live.py`)
+
+### 5.1 Pipeline Stages
+
+1. **Capture** — Frames at 640×480 resolution, 30 FPS via V4L2.
+2. **Preprocessing** — Grayscale conversion for improved bit-pattern recognition.
+3. **Detection** — `cv2.aruco.ArucoDetector` with `DICT_6X6_250` identifies marker boundaries.
+4. **Pose Estimation** — `cv2.solvePnP` with `SOLVEPNP_IPPE_SQUARE` extracts rotation vector (rvec) and translation vector (tvec) from the marker's four corner points and the camera calibration matrix (loaded from `.npz` file).
+5. **Quaternion Conversion** — rvec → rotation matrix via `cv2.Rodrigues` → unit quaternion (x, y, z, w) using Shepperd trace method.
+6. **ROS 2 Publishing** — Detected markers published on `/aruco/markers` as `visualization_msgs/MarkerArray`.
+
+### 5.2 Camera Calibration
+
+Camera intrinsic matrix (K) and distortion coefficients are loaded from `/home/ubuntu/calibration.npz`. The marker object points are defined as a 4-point square at the physical marker size (5 cm default).
+
+### 5.3 Camera-to-Map Coordinate Transform
+
+When the mission controller receives a marker, it transforms camera-frame coordinates to map-frame:
+
+1. Look up `map → base_link` TF to get robot pose and yaw.
+2. Apply camera X offset (4 cm lateral) and project camera-frame point into map frame.
+3. Extract marker outward normal direction from orientation quaternion (defines docking approach heading).
+4. Store as `(map_x, map_y, normal_yaw)` in detected markers dictionary.
+
+---
+
+## 6. Docking Logic
+
+### 6.1 Coarse-to-Fine Approach
+
+**Stage 1 — Coarse Nav2 Approach:** Navigate to standoff point 0.6 m from stored marker position along its normal direction using Nav2 global planner.
+
+**Stage 2 — Live Marker Acquisition:** Wait for fresh camera sighting (360° spin search if not visible). Update pose to correct SLAM drift. New Nav2 goal at 0.35 m from live position.
+
+**Stage 3 — Visual Servo (cmd_vel):** Three sub-phases — Align (rotate until |cam_x| < tolerance), Drive (forward + angular correction until blind threshold), Dead-reckon (fixed speed through camera blind zone to reach 0.10 m target).
+
+### 6.2 Station A — Timed Fire Sequence
+
+1. Flywheel spin-up via `/start_flywheel`.
+2. Wait 6.0 s → fire ball 1 via `/fire_ball`.
+3. Wait 9.0 s → fire ball 2.
+4. Wait 1.0 s → fire ball 3.
+5. Flywheel stop via `/stop_flywheel`.
+6. Undock — reverse 0.30 m at 0.06 m/s.
+
+### 6.3 Station B — Trigger-Based Fire Sequence
+
+1. Dock with 1 cm lateral tolerance.
+2. Flywheel spin-up.
+3. Wait for trigger marker (ArUco ID 2) detection → fire ball.
+4. Cooldown 5.0 s (prevent double-fire on same receptacle pass).
+5. Repeat for 3 balls total (30 s timeout per ball).
+6. Flywheel stop.
+
+---
+
+## 7. Launcher Hardware Controller (`ball_launcher.py`)
+
+Runs on the RPi as a ROS 2 node exposing three services:
+
+| Service | Behaviour |
+|---|---|
+| `/start_flywheel` | Sets both Motor A and Motor B to `forward(1.0)` via `gpiozero.Motor` |
+| `/fire_ball` | Triggers servo actuation (placeholder — servo implementation pending) |
+| `/stop_flywheel` | Calls `stop()` on both motors |
+
+GPIO configuration: Motor A (fwd=23, bwd=24, en=13), Motor B (fwd=22, bwd=27, en=12). Graceful degradation to simulation mode if `gpiozero` is not available.
+
+---
+
+## 8. Source Code Structure
+
+```
+├── docs/                              # Documentation markdown files
+│   ├── challenge.md                   # Problem definition and requirements
+│   ├── general-system.md              # System architecture overview
+│   ├── software.md                    # Software subsystem documentation
+│   ├── docking.md                     # Docking & delivery subsystem
+│   ├── improvements.md                # Areas for improvement
+│   └── assets/                        # Diagrams and images
+├── software/
+│   ├── Navigation/Params/burger.yaml  # Nav2 parameter configuration
+│   ├── docking/
+│   │   ├── local/
+│   │   │   ├── aruco_dock.py          # Standalone docking test (laptop)
+│   │   │   ├── aruco_dock_and_launch_test.py
+│   │   │   ├── aruco_dock_moving.py   # Moving target docking test
+│   │   │   └── station_b_launcher.py  # Standalone Station B fire test
+│   │   └── rpi/
+│   │       ├── aruco_live.py          # ArUco detection (runs on RPi)
+│   │       └── ball_launcher.py       # Hardware launcher controller (RPi)
+│   └── system_test.py                # Pre-flight integration test with GUI
+├── src/
+│   ├── auto_nav/                      # Primary ROS 2 package
+│   │   ├── auto_nav/
+│   │   │   ├── exploration_fsm.py     # Mission controller FSM (1368 lines)
+│   │   │   ├── mission_gui.py         # Tkinter mission monitoring GUI
+│   │   │   ├── r2auto_nav.py          # Earlier navigation prototype
+│   │   │   ├── r2mover.py             # Basic movement node
+│   │   │   ├── r2moverotate.py        # Move and rotate node
+│   │   │   ├── r2occupancy.py         # Occupancy grid utilities
+│   │   │   ├── r2occupancy2.py        # Occupancy grid utilities v2
+│   │   │   └── r2scanner.py           # LiDAR scanner utilities
+│   │   ├── launch/
+│   │   │   └── bringup_all.launch.py  # Unified launch file
+│   │   ├── package.xml
+│   │   └── setup.py
+│   ├── py_pubsub/                     # Basic pub/sub test package
+│   ├── testbed_pkg/                   # Assignment testbed package
+│   └── turtlebot3_simulations/        # Standard TurtleBot3 simulation
+├── Electrical/                        # Electrical subsystem documentation
+│   ├── Electrical.md
+│   └── assets/images/                 # Circuit and architecture diagrams
+└── Mechanical/
+    └── CAD Files/                     # SolidWorks parts and assemblies
+```
+
+---
+
+## 9. Build and Deployment
+
+### 9.1 Build Commands
+
+```bash
+# Install dependencies
+rosdep install --from-paths src --ignore-src -r -y
+
+# Build workspace
+colcon build --symlink-install
+
+# Source the workspace
+source install/setup.bash
+```
+
+### 9.2 Deployment Sequence
+
+1. Power on TurtleBot3.
+2. SSH into Raspberry Pi.
+3. On RPi: `python3 main_launch.py` (starts aruco_live.py and ball_launcher.py).
+4. On laptop: `ros2 run auto_nav mission_gui` (start monitoring GUI).
+5. On laptop: `ros2 launch auto_nav bringup_all.launch.py` (start mission).
+6. Monitor via RViz and mission GUI.
+
+### 9.3 Parameter Tuning
+
+After modifying `burger.yaml` or mission controller parameters, rebuild:
+
+```bash
+colcon build --packages-select auto_nav
+source install/setup.bash
+```
+
+---
+
+## 10. Visualization and Debugging
+
+### 10.1 RViz Monitoring
+
 - Live occupancy grid map from Cartographer
 - Robot pose and TF tree
 - Nav2 planned paths and costmaps
-- ArUco marker detections (when available)
+- ArUco marker detections
 
-### Mission Phase Logging
+### 10.2 Mission Phase Logging
 
-The controller publishes the current mission phase on `/mission_phase` as a String topic. Phase transitions are also logged to the ROS 2 logger, providing a complete timeline of the mission for post-analysis.
+The controller publishes the current mission phase on `/mission_phase` as a String topic. Phase transitions are logged to the ROS 2 logger. At Station B, additional diagnostics track trigger detection count and balls fired.
 
-At Station B, additional diagnostic topics track:
-- `/station_b_trigger_count` - Number of trigger marker detections
-- `/station_b_balls_fired` - Number of balls successfully fired
+### 10.3 Safety Mechanisms
 
----
-
-## Safety Mechanisms
-
-- **Immediate goal cancellation** - If a critical fault is detected (e.g., all markers found during a sweep), active Nav2 goals are cancelled immediately to avoid wasting time
-- **Flywheel safety** - Flywheel activation only occurs after successful docking; the flywheel is always stopped via service call after each firing sequence
-- **Marker loss handling** - If the tracked marker is lost during visual servo for more than 3 seconds, the approach is aborted and the robot stops
-- **Mission abort** - If neither station marker is found after all exploration strategies, the mission aborts cleanly rather than entering an undefined state
-- **Undock after delivery** - The robot always reverses after Station A to prevent blocking the receptacle
-
----
-
-## [Mechanical Subsystem →](mechanical.md)
+- Immediate Nav2 goal cancellation when all markers found during exploration.
+- Flywheel activation only after confirmed docking; always stopped via service call after firing.
+- Marker loss handling: abort approach if marker lost > 3 seconds.
+- Mission abort if no markers found after all exploration strategies.
+- Post-delivery undock to prevent blocking the receptacle.

@@ -1,25 +1,30 @@
 ---
-title: The Challenge
+title: Requirement Specifications
 ---
 
 # 🔗 Navigation
 
 - [Home](index.md)
-- [The Challenge](challenge.md)
-- [General System](general-system.md)
-- [Software Subsystem](software.md)
-- [Mechanical Subsystem](mechanical.md)
+- **Requirements** ← _You are here_
+- [Con-Ops](conops.md)
+- [High Level Design](high-level-design.md)
+- [Interface Control Documents](icd.md)
+- [Software Development](software.md)
+- [Testing](testing.md)
+- [User Manual](user-manual.md)
+- [Bill-Of-Materials](bill-of-materials.md)
 - [Electrical Subsystem](electrical.md)
-- [End User Documentation & BOM](user_docs.md)
-- [Areas for Improvement](improvements.md)
+- [Mechanical Subsystem](mechanical.md)
+- [Improvements](improvements.md)
+
+---
+# Requirement Specifications
 
 ---
 
-# The Challenge
-
 ## Problem Definition
 
-As part of CDE2310 — Fundamentals of Systems Design (AY 25-26), each team must design an autonomous mobile robot (AMR) that navigates an unknown warehouse maze, detects delivery stations via ArUco markers, and dispenses ping pong balls into receptacles — all within a **25-minute window** with no human teleoperation. The mission comprises three objectives of increasing difficulty:
+As part of CDE2310 — Fundamentals of Systems Design (AY 25-26), each team must design an autonomous mobile robot (AMR) that navigates an unknown warehouse maze, detects delivery stations via ArUco markers, and dispenses ping pong balls into receptacles — all within a 25-minute window with no human teleoperation. The mission comprises three objectives of increasing difficulty:
 
 | Objective | Station | Description |
 |---|---|---|
@@ -53,7 +58,7 @@ Line-following navigation and human-solved mapping are strictly prohibited.
 
 ---
 
-### Project Deliverables
+## Project Deliverables
 
 | Stakeholder Requirement | Project Deliverable |
 |---|---|
@@ -69,7 +74,7 @@ Line-following navigation and human-solved mapping are strictly prohibited.
 
 ---
 
-### Functional Requirements
+## Functional Requirements
 
 | ID | Requirement | Description |
 |---|---|---|
@@ -84,7 +89,7 @@ Line-following navigation and human-solved mapping are strictly prohibited.
 
 ---
 
-### Non-Functional Requirements
+## Non-Functional Requirements
 
 | Requirement Category | Non-Functional Requirement |
 |---|---|
@@ -103,14 +108,14 @@ Line-following navigation and human-solved mapping are strictly prohibited.
 
 ---
 
-### System Specifications
+## System Specifications
 
 | ID | Parameter | Specification |
 |---|---|---|
 | SS-01 | SLAM Map Resolution | ≤ 0.05 m/cell |
 | SS-02 | Obstacle Reaction Latency | DWB local planner < 100 ms (Nav2 default 20 Hz ≈ 50 ms) |
 | SS-03 | Marker Detection Range | ArUco DICT_6X6_250 detectable at 0.3–2.2 m (640×480, 10 cm marker) |
-| SS-04 | Docking Tolerance | Lateral ±2 cm, Angular ±3°, Distance 0.2–1.0 m (TBD from testing) |
+| SS-04 | Docking Tolerance | Lateral ±2 cm, Angular ±3°, Distance 0.2–1.0 m |
 | SS-05 | Flywheel Launch RPM | 2,100–14,350 RPM (variable via PWM for distance calibration) |
 | SS-06 | Ball Feed Rate | Servo actuation ≤ 0.12 s/60° (SG90); inter-ball delay for RPM recovery and timing compliance |
 | SS-07 | Power Envelope | All subsystems within 11.1V 1800mAh LiPo budget (~4 runs per charge) |
@@ -118,7 +123,7 @@ Line-following navigation and human-solved mapping are strictly prohibited.
 
 ---
 
-### Constraints
+## Constraints
 
 | Constraint | Description |
 |---|---|
@@ -137,7 +142,7 @@ Line-following navigation and human-solved mapping are strictly prohibited.
 
 ---
 
-### Scoring Overview
+## Scoring Overview
 
 Mission scoring is split into two components:
 
@@ -146,7 +151,3 @@ Points are awarded for successful detection, alignment, and delivery at each sta
 
 **Time-Based Competitive Scoring:**
 Among teams with equal objective completion, ranking is determined by the time taken to deliver all payloads and the time to achieve full map closure. Both timings are recorded independently. No timing is recorded if milestones are not achieved.
-
----
-
-## [General System →](general-system.md)
