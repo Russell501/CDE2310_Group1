@@ -12,6 +12,7 @@ title: User Manual
 - [Interface Control Documents](icd.md)
 - [Software Development](software.md)
 - [Testing](testing.md)
+- [Bill-Of-Materials](bill-of-materials.md)
 - **User Manual** ← _You are here_
 
 ---
