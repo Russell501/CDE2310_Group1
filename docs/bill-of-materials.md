@@ -26,8 +26,8 @@
 |-----|--------------------|--------|-------|
 | 1 | L298N Motor Driver | Lab | - |
 | 2 | RF300FA-12350 DC Motor | Lab | - |
-| 2 | Flywheels | 3D-Printed | Variable |
-| 1 | Ball Storage | 3D-Printed | Variable |
-| 1 | Ball-Launcher Platform | 3D-Printed | Variable |
-| 1 | Feeder Roller | 3D-Printed | Variable |
-| 1 | RPi Camera Mount | 3D-Printed | Variable |
+| 2 | Flywheels | 3D-Printed | - (printed with own machine) |
+| 1 | Ball Storage | 3D-Printed | - (printed with own machine) |
+| 1 | Ball-Launcher Platform | 3D-Printed | - (printed with own machine) |
+| 1 | Feeder Roller | 3D-Printed | - (printed with own machine) |
+| 1 | RPi Camera Mount | 3D-Printed | - (printed with own machine) |
