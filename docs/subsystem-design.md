@@ -13,6 +13,7 @@ title: Sub System Design
 - [Software Development](software.md)
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
+- [Bill-Of-Materials](bill-of-materials.md)
 
 ---
 # Sub System Design

@@ -13,6 +13,7 @@ title: High Level Design
 - [Software Development](software.md)
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
+- [Bill-Of-Materials](bill-of-materials.md)
 
 ---
 # High Level Design

@@ -13,6 +13,7 @@ title: Concept of Operations (Con-Ops)
 - [Software Development](software.md)
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
+- [Bill-Of-Materials](bill-of-materials.md)
 
 ---
 # Concept of Operations (Con-Ops)

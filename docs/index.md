@@ -13,6 +13,7 @@ title: Home — Project Overview
 - [Software Development](software.md)
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
+- [Bill-Of-Materials](bill-of-materials.md)
 
 ---
 # Project Overview

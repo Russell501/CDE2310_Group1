@@ -13,6 +13,7 @@ title: Software/Firmware Development Documentation
 - **Software Development** ← _You are here_
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
+- [Bill-Of-Materials](bill-of-materials.md)
 
 ---
 # Software/Firmware Development Documentation
