@@ -4,14 +4,10 @@
 
 | Qty | Item / Description | Source | Price |
 |-----|--------------------|--------|-------|
-| 1 | Waffle Plate (Layer 1 - Base) | Lab | - |
-| 1 | Waffle Plate (Layer 2) | Lab | - |
-| 1 | Waffle Plate (Layer 3) | Lab | - |
-| 1 | Waffle Plate (Layer 4 - Top) | Lab | - |
+| 4 | Waffle Plates | Lab | - |
 | 1 | Dynamixel XL430-W250 (Left Motor) | Lab | - |
 | 1 | Dynamixel XL430-W250 (Right Motor) | Lab | - |
-| 1 | Wheel + Tire (Left) | Lab | - |
-| 1 | Wheel + Tire (Right) | Lab | - |
+| 2 | Wheel + Tire | Lab | - |
 | 1 | Ball Caster Assembly | Lab | - |
 | 1 | OpenCR 1.0 Board | Lab | - |
 | 1 | Raspberry Pi 4 (with heatsink) | Lab | - |
@@ -29,6 +25,7 @@
 | Qty | Item / Description | Source | Price |
 |-----|--------------------|--------|-------|
 | 1 | L298N Motor Driver | Lab | - |
+| 2 | RF300FA-12350 DC Motor | Lab | - |
 | 2 | Flywheels | 3D-Printed | Variable |
 | 1 | Ball Storage | 3D-Printed | Variable |
 | 1 | Ball-Launcher Platform | 3D-Printed | Variable |
