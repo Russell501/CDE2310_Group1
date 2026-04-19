@@ -39,3 +39,6 @@ Full project documentation is available on our [GitHub Pages site](https://russe
 
 ## The Team
 ![Our Team](docs/assets/images/team_pic.jpg)
+
+## Final Run Screen Recording
+https://youtu.be/CI83_B9eB-w
