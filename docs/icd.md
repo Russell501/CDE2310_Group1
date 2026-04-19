@@ -8,7 +8,6 @@ title: Interface Control Documents
 - [Requirements](requirements.md)
 - [Con-Ops](conops.md)
 - [High Level Design](high-level-design.md)
-- [Sub System Design](subsystem-design.md)
 - **Interface Control Documents** ← _You are here_
 - [Software Development](software.md)
 - [Testing](testing.md)

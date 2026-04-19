@@ -8,7 +8,6 @@ title: High Level Design
 - [Requirements](requirements.md)
 - [Con-Ops](conops.md)
 - **High Level Design** ← _You are here_
-- [Sub System Design](subsystem-design.md)
 - [Interface Control Documents](icd.md)
 - [Software Development](software.md)
 - [Testing](testing.md)

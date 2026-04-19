@@ -8,7 +8,6 @@ title: Concept of Operations (Con-Ops)
 - [Requirements](requirements.md)
 - **Con-Ops** ← _You are here_
 - [High Level Design](high-level-design.md)
-- [Sub System Design](subsystem-design.md)
 - [Interface Control Documents](icd.md)
 - [Software Development](software.md)
 - [Testing](testing.md)

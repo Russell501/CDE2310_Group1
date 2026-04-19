@@ -8,7 +8,6 @@ title: Bill Of Materials
 - [Requirements](requirements.md)
 - [Con-Ops](conops.md)
 - [High Level Design](high-level-design.md)
-- [Sub System Design](subsystem-design.md)
 - [Interface Control Documents](icd.md)
 - [Software Development](software.md)
 - [Testing](testing.md)

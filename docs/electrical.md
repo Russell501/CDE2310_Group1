@@ -8,7 +8,6 @@ title: Electrical Subsystem
 - [Requirements](requirements.md)
 - [Con-Ops](conops.md)
 - [High Level Design](high-level-design.md)
-- [Sub System Design](subsystem-design.md)
 - [Interface Control Documents](icd.md)
 - [Software Development](software.md)
 - [Testing](testing.md)
@@ -104,6 +103,18 @@ The full circuit schematic shows all component connections including the OpenCR,
 ### RPi Camera
 - Connected to Raspberry Pi via **CSI** (Camera Serial Interface).
 - Powered at **3.3V** from the Raspberry Pi.
+
+### GPIO Pin Assignments (Launcher Hardware)
+
+| Signal | GPIO Pin | Direction | Description |
+|---|---|---|---|
+| Motor A Forward | GPIO 23 | Output | L298N IN1 — Motor A direction |
+| Motor A Backward | GPIO 24 | Output | L298N IN2 — Motor A direction |
+| Motor A Enable | GPIO 13 | Output (PWM) | L298N ENA — Motor A speed |
+| Motor B Forward | GPIO 22 | Output | L298N IN3 — Motor B direction |
+| Motor B Backward | GPIO 27 | Output | L298N IN4 — Motor B direction |
+| Motor B Enable | GPIO 12 | Output (PWM) | L298N ENB — Motor B speed |
+| SG90 Servo | GPIO (PWM pin) | Output (PWM) | Servo gate control |
 
 ---
 

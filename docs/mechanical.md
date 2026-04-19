@@ -8,7 +8,6 @@ title: Mechanical Subsystem
 - [Requirements](requirements.md)
 - [Con-Ops](conops.md)
 - [High Level Design](high-level-design.md)
-- [Sub System Design](subsystem-design.md)
 - [Interface Control Documents](icd.md)
 - [Software Development](software.md)
 - [Testing](testing.md)
@@ -36,6 +35,23 @@ The mechanical subsystem is designed to securely transport and fire ping pong ba
 
 
 <img width="400" alt="System Overview CAD" src="https://github.com/user-attachments/assets/eac126f2-4600-4039-8f25-f959a80ce601" />
+
+### Physical Specifications
+
+| Parameter | Value |
+|---|---|
+| Total Mass | 1402.24 g (1.40 kg) |
+| Overall Dimensions (L × W × H) | 138 mm × 178 mm × 192 mm |
+| Centre of Gravity — X (back +) | −56.7 mm from ball-caster origin |
+| Centre of Gravity — Y (up) | 95.3 mm from ground |
+| Centre of Gravity — Z (left +) | 2.8 mm from ball-caster origin |
+
+### Design Constraints
+
+- All mounted components must not obstruct the LDS-02 LiDAR's 360° field of view.
+- The ball storage tube follows a curved path to stay below the LiDAR plane while maintaining gravity-feed functionality.
+- The centre of gravity must remain low for stable navigation; the mounted payload must not shift during transit.
+- The robot must be compact enough to navigate narrow maze corridors without wall contact.
 
 ---
 
@@ -142,10 +158,24 @@ The dual DC motors and flywheel diameters were chosen and tuned specifically to 
 
 ## 6. Hardware & Components
 
-### TurtleBot3 Subcomponents
-- LiDAR (LDS-02)
-- RaspberryPi & OpenCR 1.0
-- 2x Dynamixel motors & LiPo Battery
+### TurtleBot3 Base Components
+
+- **First Floor Assembly** — Base plate with Dynamixel motor mounts and ball caster.
+- **Connected Plates** — Intermediate plate assemblies providing structural rigidity and component mounting.
+- **Fourth Floor Assembly** — Top plate for LiDAR mounting.
+- **Ball Caster Assembly** — Rear support with steel ball (3/8 inch) and caster cover.
+- **LiDAR Assembly** — LDS-02 LiDAR sensor mount.
+- **Fasteners** — M3 nuts, M2.5×12 and M3×6 pan head screws, hex standoffs (M3×35 and M3×45 FF), M3 threaded inserts, and inter-board brackets.
+
+### Custom Mechanical Components
+
+| Component | File | Purpose |
+|---|---|---|
+| 50 mm Flywheel | `50 mm flywheel.SLDPRT` | Flywheel disc mounted on each RF300 motor shaft for ball acceleration |
+| Ball Storage | `Ball Storage.SLDPRT` | Curved gravity-feed tube holding up to 9 ping pong balls; designed to not obstruct LiDAR 360° FOV |
+| Barrel Guide | `Barrel Guide.SLDPRT` | Directs ball trajectory through the dual counter-rotating flywheel gap |
+| Feeder Roller | `Feeder Roller.SLDPRT` | Feeds balls from the storage tube into the barrel guide |
+| SG90 Servo Mount | `SG90 - Micro Servo 9g - Tower Pro.5-1.SLDPRT` | Mounting bracket for the servo gate actuator |
 
 ### Custom Bill of Materials (BOM)
 - 1x SG90 Servo Motor (for feeder gate)
@@ -154,11 +184,34 @@ The dual DC motors and flywheel diameters were chosen and tuned specifically to 
 - Standard M4 Bolts, Nuts, and Threaded Inserts
 - BambuLab PLA Filament (1kg)
 
-### Custom 3D Printed Parts
-- Flywheel Housing (includes dual motor mounts and servo gate mount)
-- Compact Internal Ball Storage Module
-- **2x** Flywheels
-- Feeder Roller Arm
+### Ball Feed Path
+
+1. **Storage:** 9 ping pong balls sit in a curved gravity-feed tube.
+2. **Gate:** The SG90 servo actuates a gate that releases one ball at a time into the feed path.
+3. **Feeder Roller:** Guides the ball from the gate into the barrel guide.
+4. **Barrel Guide:** Channels the ball between the two counter-rotating flywheels.
+5. **Launch:** The ball exits through the flywheel gap with the desired velocity.
+
+### Motor Configuration
+
+| Parameter | Value |
+|---|---|
+| Motor Model | RF300 Series (PEL00882) DC Motor |
+| Quantity | 2 (counter-rotating) |
+| Operating Voltage | 5V (via L298N motor driver) |
+| Output Power | 0.05–0.50W per motor |
+| RPM Range | 2,100–14,350 RPM (variable via PWM) |
+| Control | Raspberry Pi GPIO → L298N (IN_HIGH/IN_LOW for direction) |
+
+### Servo Gate Configuration
+
+| Parameter | Value |
+|---|---|
+| Model | SG90 Micro Servo 9g (Tower Pro) |
+| Operating Voltage | 5V (from RPi 5V rail) |
+| Control Signal | PWM from Raspberry Pi GPIO |
+| Actuation Speed | ≤ 0.12 s/60° |
+| Purpose | Gate control for single-ball release |
 
 ---
 
