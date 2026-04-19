@@ -1,0 +1,17 @@
+title: "CDE2310 Group 1 — AMR for Smart Warehouse Intralogistics"
+description: "System documentation for the autonomous mobile robot (TurtleBot3 Burger) designed for smart warehouse intralogistics."
+remote_theme: pages-themes/minimal@v0.2.0
+plugins:
+  - jekyll-remote-theme
+
+team:
+  name: "Group 1"
+  members:
+    - Russell
+    - Shandrico
+    - Alex
+    - Moksh
+  course: "CDE2310 — Fundamentals of Systems Design (AY 25-26)"
+  institution: "NUS EDIC"
+
+software_version: "v1.0.0"
