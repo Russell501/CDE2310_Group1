@@ -99,6 +99,57 @@ Before running the full mission, execute the system integration test to verify a
 4. On the laptop: run `python3 system_test.py`.
 5. All 8 tests should pass (the test will fire one real ball during test #7).
 
+### 3.3 Individual Component & Docking Tests
+
+If specific subsystems need to be verified in isolation, use the following standalone test scripts. All RPi scripts should be run via SSH on the TurtleBot; local scripts should be run on the operator's laptop.
+
+**1. Test Flywheels**
+
+Spins up the flywheel motors to verify both are operational and spinning at matched speeds.
+
+```bash
+# Copy the script from software/docking/rpi
+# On RPi (via SSH):
+python3 ball_launcher_test.py
+```
+
+**2. Test Servo**
+
+Cycles the SG90 servo through its range to verify the feeder gate mechanism is responding to PWM signals.
+
+```bash
+# Copy the script from software/docking/rpi
+# On RPi (via SSH):
+python3 servo.py
+```
+
+**3. Test Station A Docking & Launching (Full Sequence)**
+
+Runs the complete Station A sequence: ArUco detection, approach, docking alignment, and ball firing.
+
+```bash
+# On laptop:
+python3 software/docking/local/aruco_dock_and_launch_test.py
+```
+
+**4. Test Docking Only**
+
+Runs the docking approach sequence (ArUco detection and alignment) without firing any balls.
+
+```bash
+# On laptop:
+python3 software/docking/local/aruco_dock_test.py
+```
+
+**5. Test Station B Launching**
+
+Tests the Station B firing sequence, which synchronises ball launches with the moving receptacle.
+
+```bash
+# On laptop:
+python3 software/docking/local/station_b_launcher.py
+```
+
 ---
 
 ## 4. Mission Deployment
