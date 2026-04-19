@@ -33,9 +33,9 @@ The mechanical subsystem is designed to securely transport and fire ping pong ba
 - A **gravity-assisted, servo-controlled feeder** with a rotating arm for precise, single-ball release.
 - A **dual-flywheel launcher** integrated directly into the robot's internal structural layers to ensure a straight, spin-free launch.
 - A low-profile design that maintains the LiDAR sensor unobstructed by any components
-<img width="722" height="581" alt="image" src="https://github.com/user-attachments/assets/eac126f2-4600-4039-8f25-f959a80ce601" />
 
 
+<img width="400" alt="System Overview CAD" src="https://github.com/user-attachments/assets/eac126f2-4600-4039-8f25-f959a80ce601" />
 
 ---
 
@@ -65,8 +65,9 @@ A flywheel system was selected to achieve rapid and consistent ball launching. U
 ### Feeder Gate Control Mechanism
 A servo-controlled feeder gate is implemented to regulate ball input into the flywheel system. This prevents accidental or unintended firing of balls and ensures that each ball is properly aligned before entering the flywheels. The mechanism also reduces the risk of jamming and improves consistency in launch timing.
 
-<img width="661" height="488" alt="image" src="https://github.com/user-attachments/assets/d6a81981-5d15-40c1-8332-270a2082e994" />
-
+| CAD Model | Real Life |
+|:---------:|:---------:|
+| <img width="400" alt="Feeder Gate CAD" src="https://github.com/user-attachments/assets/d6a81981-5d15-40c1-8332-270a2082e994" /> | ![feeder-gate-mechanism-pic](assets/images/mechanical/feeder-gate-mechanism.jpg) |
 
 ### Structural and Functional Integration
 All components are designed to work within a compact 3D-printed housing system. The launcher, motors, and feeder mechanism are tightly integrated to maintain structural rigidity while minimising external protrusions. This improves both mechanical stability and spatial efficiency within the robot.
@@ -80,22 +81,22 @@ Our final design is the result of testing and refining several prototypes to sol
 ### Iteration 1: Front-Mounted Launcher with Full Spiral Storage
 - **Design:** A full spiral ball storage track feeding into a launcher mounted at the very front of the TurtleBot.
 - **Problem:** The robot became heavily front-biased, risking tipping. Additionally, feeding the ball to the front required a sharp 90-degree bend in the internal tubing, which caused severe jamming and made the feeding mechanism overly complex.
-<img width="990" height="663" alt="image" src="https://github.com/user-attachments/assets/b394cdfa-895e-47f8-9301-56eaec3951d2" />
 
-
+<img width="400" alt="Iteration 1 CAD" src="https://github.com/user-attachments/assets/b394cdfa-895e-47f8-9301-56eaec3951d2" />
 
 ### Iteration 2: Side-Mounted Launcher with 0.75x Spiral
 - **Design:** We reduced the spiral to 0.75 revolutions so the track ended in a straight path. We extended this path to a side-mounted launcher pointing forward.
 - **Problem:** This resulted in an asymmetrical footprint (the robot was "fat" on one side). This extra width severely limited the robot's ability to navigate tight maze corridors and made aligning for docking highly inconsistent.
-<img width="969" height="728" alt="image" src="https://github.com/user-attachments/assets/ee062d10-3c7f-4f42-9b7f-687ff1c121d6" />
 
-
+<img width="400" alt="Iteration 2 CAD" src="https://github.com/user-attachments/assets/ee062d10-3c7f-4f42-9b7f-687ff1c121d6" />
 
 ### Iteration 3: Centered & Layer-Integrated
 - **Design:** We abandoned the spiral storage concept entirely. We centered the dual-flywheel launching mechanism and embedded a compact ball storage module tightly between the TurtleBot's structural plates. 
 - **Result:** This eliminated the asymmetrical width, completely resolved the 90-degree feed jamming issue, and perfectly balanced the center of gravity. Furthermore, the internal embedding successfully prevented any vertical stacking that would block the LiDAR, eliminating the need to modify the sensor's stock height.
-<img width="641" height="601" alt="image" src="https://github.com/user-attachments/assets/eac60a02-d5e4-4e5c-a599-a366645a213d" />
 
+| CAD Model | Real Life |
+|:---------:|:---------:|
+| <img width="400" alt="Iteration 3 CAD" src="https://github.com/user-attachments/assets/eac60a02-d5e4-4e5c-a599-a366645a213d" /> | ![finalised-launcher-design](assets/images/mechanical/finalised-launcher-design.jpg) |
 
 ### Iteration 4: Stability Improvement
 - **Design:** We extended the rear of the 3D-printed flywheel housing so that it sits flush against the TurtleBot's rear hex supports, allowing the housing to be directly bolted and tightened to the chassis.
@@ -169,10 +170,16 @@ The dual DC motors and flywheel diameters were chosen and tuned specifically to 
 3.  **Attach Flywheels:** Firmly press-fit the two 3D-printed flywheels onto the shafts of the DC motors. Ensure they are fully seated to prevent wobble.
 4.  **Disassemble TurtleBot Layer:** Remove the top waffle plate (Layer 4) of the TurtleBot, carefully disconnecting the LiDAR module.
 
+![remove-lidar-layer](assets/images/mechanical/remove-lidar-layer.jpg)
+
 ### Step 2: Assembling the Launcher
 1.  **Mount Servo Assembly:** Fasten the SG90 servo motor (with the attached feeder arm) onto its mounting bracket on the flywheel housing.
 2.  **Install Flywheel Motors:** Press-fit both DC motors into the flywheel housing, ensuring the flywheels sit precisely alongside the shooting tube walls.
+3. **Install ball storage:** Fasten the connecting joints
 
+| Fitting Motors & Servo | Installing Ball Storage |
+|:----------------------:|:-----------------------:|
+| ![fit-motors-and-servo](assets/images/mechanical/fit-motors-and-servo.jpg) | ![install-ball-storage](assets/images/mechanical/install-ball-storage.jpg) |
 
 ### Step 3: Integration with TurtleBot
 1.  **Position Launcher:** Place the assembled launcher module between the hex supports and the Layer 4 waffle plate.
