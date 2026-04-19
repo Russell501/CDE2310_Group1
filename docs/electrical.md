@@ -15,7 +15,7 @@ title: Electrical Subsystem
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
 - **Electrical Subsystem** ← _You are here_
-- [Mechanical Subsystem](Mechanical.md)
+- [Mechanical Subsystem](mechanical.md)
 
 ---
 

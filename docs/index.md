@@ -15,7 +15,7 @@ title: Home — Project Overview
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
 - [Electrical Subsystem](electrical.md)
-- [Mechanical Subsystem](Mechanical.md)
+- [Mechanical Subsystem](mechanical.md)
 
 ---
 # Project Overview
