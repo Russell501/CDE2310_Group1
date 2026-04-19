@@ -47,11 +47,15 @@ The Group 1 AMR is a TurtleBot3 Burger-based autonomous mobile robot with a cust
 
 ## 2. Prerequisites
 
-### 2.1 Software Environment
+### 2.1 Mechanical and Electrical Setup
+
+The mechanical and electrical is assumed to be complete. However a detailed explanation is provided for configuring the electrical subsystems and attaching the ball-launching mechanisms onto a standard, unmodified Turtlebot3.
+
+### 2.2 Software Environment
 
 A ROS 2 Humble environment must be installed on the operator's laptop. Follow the setup process at: https://emanual.robotis.com/docs/en/platform/turtlebot3/quick-start/#pc-setup
 
-### 2.2 Software Installation
+### 2.3 Software Installation
 
 1. Back up and remove your existing ROS 2 src folder:
 
