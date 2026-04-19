@@ -13,6 +13,9 @@ title: Bill Of Materials
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
 - **Bill-Of-Materials** ← _You are here_
+- [Electrical Subsystem](electrical.md)
+- [Mechanical Subsystem](mechanical.md)
+- [Improvements](improvements.md)
 
 ## TurtleBot3 Burger (Lab-Provided)
 
