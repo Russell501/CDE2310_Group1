@@ -16,6 +16,7 @@ title: Software/Firmware Development Documentation
 - [Bill-Of-Materials](bill-of-materials.md)
 - [Electrical Subsystem](electrical.md)
 - [Mechanical Subsystem](mechanical.md)
+- [Improvements](improvements.md)
 
 ---
 # Software/Firmware Development Documentation

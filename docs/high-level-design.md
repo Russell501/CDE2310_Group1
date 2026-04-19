@@ -16,6 +16,7 @@ title: High Level Design
 - [Bill-Of-Materials](bill-of-materials.md)
 - [Electrical Subsystem](electrical.md)
 - [Mechanical Subsystem](mechanical.md)
+- [Improvements](improvements.md)
 
 ---
 # High Level Design

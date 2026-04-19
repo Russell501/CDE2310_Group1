@@ -16,6 +16,7 @@ title: Electrical Subsystem
 - [Bill-Of-Materials](bill-of-materials.md)
 - **Electrical Subsystem** ← _You are here_
 - [Mechanical Subsystem](mechanical.md)
+- [Improvements](improvements.md)
 
 ---
 
