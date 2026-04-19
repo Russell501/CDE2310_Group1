@@ -23,7 +23,7 @@ title: Sub System Design
 
 ### 1.1 System Architecture
 
-![System Architecture / Communication Protocols Diagram](../Electrical/assets/images/comm_protocols.png)
+![System Architecture / Communication Protocols Diagram](assets/images/electrical/comm_protocols.png)
 *Communication protocols between all components (USB, UART, CSI, PWM, GPIO).*
 
 
@@ -31,7 +31,7 @@ The Raspberry Pi acts as the central processing unit, coordinating all subsystem
 
 ### 1.2 Power Distribution
 
-![Power Distribution Diagram](../Electrical/assets/images/system_dia.png)
+![Power Distribution Diagram](assets/images/electrical/system_dia.png)
 *Power distribution diagram showing voltage levels (11.1V, 5V, 3.3V) to each component.*
 
 
@@ -94,7 +94,7 @@ Battery capacity: 11.1V × 1.8Ah × 0.9 (efficiency) = 17.98 Wh → ~5 mission r
 
 ### 1.5 Electrical Schematic Notes
 
-![Electrical Schematic](../Electrical/assets/images/elec_schem.png)
+![Electrical Schematic](assets/images/electrical/elec_schem.png)
 *Full electrical schematic showing all component connections.*
 
 

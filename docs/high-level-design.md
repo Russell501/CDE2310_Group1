@@ -80,7 +80,7 @@ Handles payload storage, feeding, and delivery:
 
 ## Power Architecture
 
-![Power Distribution Diagram](../Electrical/assets/images/system_dia.png)
+![Power Distribution Diagram](assets/images/electrical/system_dia.png)
 *Power distribution diagram showing voltage levels (11.1V, 5V, 3.3V) to each component.*
 
 

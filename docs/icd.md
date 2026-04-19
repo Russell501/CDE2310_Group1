@@ -21,7 +21,7 @@ title: Interface Control Documents
 
 ## 1. Hardware Interfaces
 
-![Communication Protocols Diagram](../Electrical/assets/images/comm_protocols.png)
+![Communication Protocols Diagram](assets/images/electrical/comm_protocols.png)
 *Communication protocols between all components (USB, UART, CSI, PWM, GPIO).*
 
 
