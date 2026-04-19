@@ -14,6 +14,7 @@ title: Sub System Design
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
+- [Electrical Subsystem](electrical.md)
 
 ---
 # Sub System Design

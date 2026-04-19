@@ -14,6 +14,7 @@ title: Interface Control Documents
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
+- [Electrical Subsystem](electrical.md)
 
 ---
 # Interface Control Documents

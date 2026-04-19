@@ -13,6 +13,7 @@ title: User Manual
 - [Software Development](software.md)
 - [Testing](testing.md)
 - [Bill-Of-Materials](bill-of-materials.md)
+- [Electrical Subsystem](electrical.md)
 - **User Manual** ← _You are here_
 
 ---

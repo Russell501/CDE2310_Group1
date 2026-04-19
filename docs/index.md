@@ -14,6 +14,7 @@ title: Home — Project Overview
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
+- [Electrical Subsystem](electrical.md)
 
 ---
 # Project Overview

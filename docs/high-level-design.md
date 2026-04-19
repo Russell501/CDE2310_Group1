@@ -14,6 +14,7 @@ title: High Level Design
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
+- [Electrical Subsystem](electrical.md)
 
 ---
 # High Level Design

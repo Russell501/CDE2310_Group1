@@ -14,6 +14,7 @@ title: Software/Firmware Development Documentation
 - [Testing](testing.md)
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
+- [Electrical Subsystem](electrical.md)
 
 ---
 # Software/Firmware Development Documentation

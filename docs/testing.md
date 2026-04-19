@@ -14,6 +14,7 @@ title: Testing Documentation
 - **Testing** ← _You are here_
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
+- [Electrical Subsystem](electrical.md)
 
 ---
 # Testing Documentation
