@@ -166,16 +166,15 @@ The dual DC motors and flywheel diameters were chosen and tuned specifically to 
 
 ### Step 1: Preparation
 1.  **Insert Threads:** Heat-press threaded inserts into the designated holes on the flywheel housing and ball storage components.
-2.  **Mount Feeder Roller:** Securely attach the custom 3D-printed feeder roller to the spline of the SG90 servo motor.
-3.  **Attach Flywheels:** Firmly press-fit the two 3D-printed flywheels onto the shafts of the DC motors. Ensure they are fully seated to prevent wobble.
-4.  **Disassemble TurtleBot Layer:** Remove the top waffle plate (Layer 4) of the TurtleBot, carefully disconnecting the LiDAR module.
+2.  **Attach Flywheels:** Firmly press-fit the two 3D-printed flywheels onto the shafts of the DC motors. Ensure they are fully seated to prevent wobble.
+3.  **Disassemble TurtleBot Layer:** Remove the top waffle plate (Layer 4) of the TurtleBot, carefully disconnecting the LiDAR module.
 
 ![remove-lidar-layer](assets/images/mechanical/remove-lidar-layer.jpg)
 
 ### Step 2: Assembling the Launcher
 1.  **Mount Servo Assembly:** Fasten the SG90 servo motor (with the attached feeder arm) onto its mounting bracket on the flywheel housing.
 2.  **Install Flywheel Motors:** Press-fit both DC motors into the flywheel housing, ensuring the flywheels sit precisely alongside the shooting tube walls.
-3. **Install ball storage:** Fasten the connecting joints
+3. **Mount Feeder Roller:** Securely attach the custom 3D-printed feeder roller to the spline of the SG90 servo motor.
 
 | Fitting Motors & Servo | Installing Ball Storage |
 |:----------------------:|:-----------------------:|
@@ -184,7 +183,7 @@ The dual DC motors and flywheel diameters were chosen and tuned specifically to 
 ### Step 3: Integration with TurtleBot
 1.  **Position Launcher:** Place the assembled launcher module between the hex supports and the Layer 4 waffle plate.
 2.  **Secure Mounts:** Fasten the top and rear of the flywheel housing to the waffle plate and hex supports using M4 bolts and the threaded inserts.
-3.  **Install Storage Module:** Mount the compact internal ball storage directly above the launcher intake. 
+3.  **Install Storage Module:** Mount the compact internal ball storage directly above the launcher intake.
 4.  **Extend Supports:** Install additional 60 mm hex supports to the left and right sides of the chassis to accommodate the new hardware height.
 5.  **Finalize Assembly:** Reattach the Layer 4 waffle plate onto the extended hex supports, ensuring the LiDAR sensor remains in its stock configuration on top.
 
