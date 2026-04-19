@@ -15,6 +15,7 @@ title: Concept of Operations (Con-Ops)
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
 - [Electrical Subsystem](electrical.md)
+- [Mechanical Subsystem](Mechanical.md)
 
 ---
 # Concept of Operations (Con-Ops)

@@ -15,6 +15,7 @@ title: High Level Design
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
 - [Electrical Subsystem](electrical.md)
+- [Mechanical Subsystem](Mechanical.md)
 
 ---
 # High Level Design

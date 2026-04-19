@@ -1,3 +1,24 @@
+---
+title: Mechanical Subsystem
+---
+
+# 🔗 Navigation
+
+- [Home](index.md)
+- [Requirements](requirements.md)
+- [Con-Ops](conops.md)
+- [High Level Design](high-level-design.md)
+- [Sub System Design](subsystem-design.md)
+- [Interface Control Documents](icd.md)
+- [Software Development](software.md)
+- [Testing](testing.md)
+- [User Manual](user-manual.md)
+- [Bill-Of-Materials](bill-of-materials.md)
+- [Electrical Subsystem](electrical.md)
+- **Mechanical Subsystem** ← _You are here_
+
+---
+
 # Mechanical Subsystem Documentation
 
 This document outlines the design, iteration, and assembly of the custom payload for the TurtleBot, detailing how we achieved a compact, reliable, and precise ping pong ball launching system.

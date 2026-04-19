@@ -14,6 +14,7 @@ title: User Manual
 - [Testing](testing.md)
 - [Bill-Of-Materials](bill-of-materials.md)
 - [Electrical Subsystem](electrical.md)
+- [Mechanical Subsystem](Mechanical.md)
 - **User Manual** ← _You are here_
 
 ---

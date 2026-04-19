@@ -15,6 +15,7 @@ title: Requirement Specifications
 - [User Manual](user-manual.md)
 - [Bill-Of-Materials](bill-of-materials.md)
 - [Electrical Subsystem](electrical.md)
+- [Mechanical Subsystem](Mechanical.md)
 
 ---
 # Requirement Specifications
